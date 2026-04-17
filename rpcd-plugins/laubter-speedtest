@@ -1,0 +1,188 @@
+#!/bin/sh
+# laubter-speedtest: Speed test with live WAN throughput monitoring
+# Runs speedtest-go in background while sampling interface counters for live speed
+
+RESULTS_FILE="/tmp/laubter/speedtest_last.json"
+HISTORY_FILE="/tmp/laubter/speedtest_history.json"
+PROGRESS_FILE="/tmp/laubter/speedtest_progress"
+PID_FILE="/tmp/laubter/speedtest.pid"
+OUTPUT_FILE="/tmp/laubter/speedtest_output.txt"
+mkdir -p /tmp/laubter
+
+get_wan_dev() {
+	local dev=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)
+	[ -z "$dev" ] && dev="eth1"
+	echo "$dev"
+}
+
+case "$1" in
+	list)
+		echo '{ "start": {}, "get_progress": {}, "get_last": {}, "get_history": {} }'
+		;;
+	call)
+		case "$2" in
+			start)
+				if [ -f "$PID_FILE" ]; then
+					PID=$(cat "$PID_FILE")
+					if kill -0 "$PID" 2>/dev/null; then
+						echo '{"status":"already_running"}'
+						exit 0
+					fi
+				fi
+
+				echo '{"phase":"starting","download":0,"upload":0,"ping":0,"jitter":0,"server":"","live_speed":0,"progress":0}' > "$PROGRESS_FILE"
+				> "$OUTPUT_FILE"
+
+				(
+					WAN=$(get_wan_dev)
+
+					# Measure ping to gateway before starting (quick latency estimate)
+					GW=$(ip route show default 2>/dev/null | awk '{print $3; exit}')
+					LIVE_PING=0
+					LIVE_JITTER=0
+					if [ -n "$GW" ]; then
+						PING_OUT=$(ping -c 3 -W 1 "$GW" 2>/dev/null | tail -1)
+						# Parse "rtt min/avg/max/mdev = 1.234/2.345/3.456/0.567 ms"
+						LIVE_PING=$(echo "$PING_OUT" | awk -F'[/ ]' '/min\/avg/{print $8}' 2>/dev/null || echo 0)
+						LIVE_JITTER=$(echo "$PING_OUT" | awk -F'[/ ]' '/min\/avg/{print $10}' 2>/dev/null || echo 0)
+						[ -z "$LIVE_PING" ] && LIVE_PING=0
+						[ -z "$LIVE_JITTER" ] && LIVE_JITTER=0
+					fi
+
+					# Start speedtest-go in background
+					speedtest-go --json > "$OUTPUT_FILE" 2>/dev/null &
+					TEST_PID=$!
+
+					# Monitor WAN throughput while test runs
+					PREV_RX=$(cat /sys/class/net/$WAN/statistics/rx_bytes 2>/dev/null || echo 0)
+					PREV_TX=$(cat /sys/class/net/$WAN/statistics/tx_bytes 2>/dev/null || echo 0)
+					PREV_TIME=$(date +%s)
+					TICK=0
+					PHASE="ping"
+					PEAK_DL=0
+					PEAK_UL=0
+					SAW_UPLOAD=0
+
+					while kill -0 $TEST_PID 2>/dev/null; do
+						sleep 1
+						TICK=$((TICK + 1))
+						NOW=$(date +%s)
+						DT=$((NOW - PREV_TIME))
+						[ "$DT" -le 0 ] && DT=1
+
+						CUR_RX=$(cat /sys/class/net/$WAN/statistics/rx_bytes 2>/dev/null || echo 0)
+						CUR_TX=$(cat /sys/class/net/$WAN/statistics/tx_bytes 2>/dev/null || echo 0)
+
+						RX_RATE=$(( (CUR_RX - PREV_RX) / DT ))
+						TX_RATE=$(( (CUR_TX - PREV_TX) / DT ))
+						[ "$RX_RATE" -lt 0 ] && RX_RATE=0
+						[ "$TX_RATE" -lt 0 ] && TX_RATE=0
+
+						# Convert to Mbps (bytes/s * 8 / 1000000)
+						RX_MBPS=$(awk "BEGIN { printf \"%.1f\", $RX_RATE * 8 / 1000000 }")
+						TX_MBPS=$(awk "BEGIN { printf \"%.1f\", $TX_RATE * 8 / 1000000 }")
+
+						# Detect phase from throughput pattern
+						# First ~3s = ping, then high RX = download, then high TX = upload
+						# Once upload phase is reached, never go back to download
+						if [ "$TICK" -le 3 ]; then
+							PHASE="ping"
+							LIVE=$RX_MBPS
+							PCT=$((TICK * 5))
+						elif [ "$SAW_UPLOAD" = "1" ] || [ "$TX_RATE" -gt 1000000 ]; then
+							PHASE="upload"
+							SAW_UPLOAD=1
+							LIVE=$TX_MBPS
+							TX_INT=${TX_MBPS%.*}
+							PEAK_INT=${PEAK_UL%.*}
+							[ "${TX_INT:-0}" -gt "${PEAK_INT:-0}" ] && PEAK_UL=$TX_MBPS
+							PCT=$((55 + (TICK - 14) * 3))
+							[ "$PCT" -gt 95 ] && PCT=95
+						elif [ "$RX_RATE" -gt 1000000 ]; then
+							PHASE="download"
+							LIVE=$RX_MBPS
+							# Track peak
+							RX_INT=${RX_MBPS%.*}
+							PEAK_INT=${PEAK_DL%.*}
+							[ "${RX_INT:-0}" -gt "${PEAK_INT:-0}" ] && PEAK_DL=$RX_MBPS
+							PCT=$((15 + TICK * 2))
+							[ "$PCT" -gt 55 ] && PCT=55
+						else
+							LIVE="0"
+							PCT=$((TICK * 3))
+							[ "$PCT" -gt 95 ] && PCT=95
+						fi
+
+						echo "{\"phase\":\"$PHASE\",\"download\":$PEAK_DL,\"upload\":$PEAK_UL,\"ping\":$LIVE_PING,\"jitter\":$LIVE_JITTER,\"server\":\"\",\"live_speed\":$LIVE,\"progress\":$PCT}" > "$PROGRESS_FILE"
+
+						PREV_RX=$CUR_RX
+						PREV_TX=$CUR_TX
+						PREV_TIME=$NOW
+					done
+
+					wait $TEST_PID
+
+					# Parse final JSON result
+					if [ -s "$OUTPUT_FILE" ]; then
+						cp "$OUTPUT_FILE" "$RESULTS_FILE"
+
+						DL=$(jsonfilter -i "$OUTPUT_FILE" -e '@.servers[0].dl_speed' 2>/dev/null || echo 0)
+						UL=$(jsonfilter -i "$OUTPUT_FILE" -e '@.servers[0].ul_speed' 2>/dev/null || echo 0)
+						PING=$(jsonfilter -i "$OUTPUT_FILE" -e '@.servers[0].latency' 2>/dev/null || echo 0)
+						JITTER=$(jsonfilter -i "$OUTPUT_FILE" -e '@.servers[0].jitter' 2>/dev/null || echo 0)
+						SRV=$(jsonfilter -i "$OUTPUT_FILE" -e '@.servers[0].name' 2>/dev/null || echo "")
+						SPONSOR=$(jsonfilter -i "$OUTPUT_FILE" -e '@.servers[0].sponsor' 2>/dev/null || echo "")
+
+						DL_MBPS=$(awk "BEGIN { printf \"%.1f\", $DL / 1000000 }")
+						UL_MBPS=$(awk "BEGIN { printf \"%.1f\", $UL / 1000000 }")
+						PING_MS=$(awk "BEGIN { printf \"%.1f\", $PING / 1000000 }")
+						JITTER_MS=$(awk "BEGIN { printf \"%.1f\", $JITTER / 1000000 }")
+
+						echo "{\"phase\":\"done\",\"download\":$DL_MBPS,\"upload\":$UL_MBPS,\"ping\":$PING_MS,\"jitter\":$JITTER_MS,\"server\":\"$SRV ($SPONSOR)\",\"live_speed\":0,\"progress\":100}" > "$PROGRESS_FILE"
+
+						cat "$OUTPUT_FILE" >> "$HISTORY_FILE"
+						tail -20 "$HISTORY_FILE" > "$HISTORY_FILE.tmp" && mv "$HISTORY_FILE.tmp" "$HISTORY_FILE"
+					else
+						echo '{"phase":"error","download":0,"upload":0,"ping":0,"jitter":0,"server":"Failed","live_speed":0,"progress":0}' > "$PROGRESS_FILE"
+					fi
+
+					rm -f "$PID_FILE"
+				) &
+
+				echo $! > "$PID_FILE"
+				echo '{"status":"started"}'
+				;;
+
+			get_progress)
+				if [ -f "$PROGRESS_FILE" ]; then
+					cat "$PROGRESS_FILE"
+				else
+					echo '{"phase":"idle","download":0,"upload":0,"ping":0,"jitter":0,"server":"","live_speed":0,"progress":0}'
+				fi
+				;;
+
+			get_last)
+				if [ -f "$RESULTS_FILE" ]; then
+					cat "$RESULTS_FILE"
+				else
+					echo '{"error":"No speed test results yet"}'
+				fi
+				;;
+
+			get_history)
+				if [ -f "$HISTORY_FILE" ]; then
+					printf '['
+					FIRST=1
+					while IFS= read -r line; do
+						[ -z "$line" ] && continue
+						[ "$FIRST" = "1" ] && FIRST=0 || printf ','
+						printf '%s' "$line"
+					done < "$HISTORY_FILE"
+					printf ']'
+				else
+					echo '[]'
+				fi
+				;;
+		esac
+		;;
+esac

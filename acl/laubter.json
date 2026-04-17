@@ -1,0 +1,67 @@
+{
+	"laubter-ui": {
+		"description": "Laubter - Modern web interface for OpenWrt",
+		"read": {
+			"ubus": {
+				"system": ["board", "info"],
+				"network": ["restart", "reload"],
+				"network.device": ["status"],
+				"network.interface": ["dump", "status"],
+				"network.interface.*": ["status", "up", "down", "renew"],
+				"network.wireless": ["status"],
+				"iwinfo": ["devices", "info", "assoclist", "freqlist", "txpowerlist", "countrylist", "survey", "phyname", "scan"],
+				"hostapd.*": ["get_clients", "get_status"],
+				"dhcp": ["ipv4leases", "ipv6leases"],
+				"log": ["read"],
+				"session": ["login", "access", "destroy"],
+				"uci": ["configs", "get", "state", "changes"],
+				"rpc-sys": ["packagelist", "upgrade_test"],
+				"rc": ["list"],
+				"file": ["read", "list", "stat", "exec", "md5"],
+				"laubter-network": ["get_devices", "get_board"],
+				"laubter-hosts": ["get_hints"],
+				"laubter-wireless": ["get_survey", "get_scan"],
+				"laubter-firewall": ["get_conntrack", "get_recent_blocks", "get_ruleset_summary"],
+				"laubter-bandwidth": ["get_data", "get_stats", "record_sample"],
+				"laubter-stats": ["record", "get_history", "get_current", "get_peaks"],
+				"laubter-mesh": ["get_nodes", "get_clients", "get_topology", "get_wireless_clients", "get_wired_clients", "get_info", "bind_client", "configure", "get_config", "test_connection"],
+				"laubter-vpn": ["generate_keypair", "generate_psk", "get_status", "generate_qr", "get_client_config", "get_server_public_key", "get_wan_ip", "setup_server", "add_peer", "remove_peer"],
+				"laubter-ddns": ["update", "get_status", "get_config", "configure", "test"],
+				"laubter-speedtest": ["start", "get_progress", "get_last", "get_history"],
+				"laubter-traffic": ["get_clients"],
+				"laubter-mqtt": ["get_config", "configure", "test_connection", "get_tracked_devices", "add_tracked_device", "remove_tracked_device", "get_zone_mappings", "set_zone_mapping", "get_ha_zones", "set_ha_token", "publish_discovery"],
+				"laubter-processes": ["get_all", "kill"],
+				"laubter-adguard": ["get_status", "get_stats", "get_querylog", "get_filtering", "toggle_protection", "toggle_filtering", "toggle_safebrowsing", "toggle_parental", "add_filter", "remove_filter", "add_user_rule", "remove_user_rule", "get_querylog_config", "set_querylog_config", "get_clients"]
+			},
+			"uci": [
+				"network", "wireless", "dhcp", "firewall", "system",
+				"dropbear", "uhttpd", "rpcd", "sqm", "wireguard",
+				"openvpn", "ddns", "upnpd"
+			],
+			"file": {
+				"/etc/board.json": ["read"],
+				"/proc/sys/net/netfilter/nf_conntrack_count": ["read"],
+				"/proc/sys/net/netfilter/nf_conntrack_max": ["read"],
+				"/proc/stat": ["read"],
+				"/tmp/dhcp.leases": ["read"],
+				"/etc/openwrt_release": ["read"]
+			}
+		},
+		"write": {
+			"ubus": {
+				"session": ["login", "destroy"],
+				"uci": ["set", "add", "delete", "rename", "order", "commit", "apply", "confirm", "revert"],
+				"network": ["restart", "reload"],
+				"network.interface.*": ["up", "down", "renew"],
+				"system": ["reboot"],
+				"rpc-sys": ["packageinstall", "packageremove", "upgrade_start", "upgrade_clean", "password_set", "factory"],
+				"rc": ["init"]
+			},
+			"uci": [
+				"network", "wireless", "dhcp", "firewall", "system",
+				"dropbear", "uhttpd", "sqm", "wireguard", "openvpn"
+			],
+			"cgi-io": ["upload"]
+		}
+	}
+}

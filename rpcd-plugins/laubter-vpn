@@ -1,0 +1,369 @@
+#!/bin/sh
+# laubter-vpn: WireGuard VPN server management for Laubter
+# Handles: key generation, peer provisioning, QR codes, status
+
+. /usr/share/libubox/jshn.sh
+
+WG_IFACE="wg0"
+KEY_DIR="/etc/wireguard"
+mkdir -p "$KEY_DIR"
+chmod 700 "$KEY_DIR"
+
+case "$1" in
+	list)
+		cat <<-'EOF'
+{
+	"generate_keypair": {},
+	"generate_psk": {},
+	"get_status": {},
+	"generate_qr": { "peer_name": "str" },
+	"get_client_config": { "peer_name": "str" },
+	"get_server_public_key": {},
+	"get_wan_ip": {},
+	"setup_server": { "listen_port": "str", "address": "str" },
+	"add_peer": { "name": "str", "allowed_ip": "str" },
+	"remove_peer": { "name": "str" }
+}
+EOF
+		;;
+	call)
+		case "$2" in
+			generate_keypair)
+				PRIV=$(wg genkey 2>/dev/null)
+				PUB=$(echo "$PRIV" | wg pubkey 2>/dev/null)
+				if [ -n "$PRIV" ] && [ -n "$PUB" ]; then
+					echo "{\"private_key\":\"$PRIV\",\"public_key\":\"$PUB\"}"
+				else
+					echo '{"error":"Failed to generate keys. Is wireguard-tools installed?"}'
+				fi
+				;;
+
+			generate_psk)
+				PSK=$(wg genpsk 2>/dev/null)
+				if [ -n "$PSK" ]; then
+					echo "{\"psk\":\"$PSK\"}"
+				else
+					echo '{"error":"Failed to generate PSK"}'
+				fi
+				;;
+
+			get_server_public_key)
+				# Read from UCI or key file
+				PRIV=$(uci -q get network.$WG_IFACE.private_key 2>/dev/null)
+				if [ -n "$PRIV" ]; then
+					PUB=$(echo "$PRIV" | wg pubkey 2>/dev/null)
+					echo "{\"public_key\":\"$PUB\"}"
+				else
+					echo '{"public_key":""}'
+				fi
+				;;
+
+			get_wan_ip)
+				# Get endpoint: prefer DDNS hostname, fallback to WAN IP
+				DDNS_ENABLED=$(uci -q get laubter.ddns.enabled 2>/dev/null || echo "0")
+				DDNS_DOMAIN=$(uci -q get laubter.ddns.domain 2>/dev/null || echo "")
+				if [ "$DDNS_ENABLED" = "1" ] && [ -n "$DDNS_DOMAIN" ]; then
+					echo "{\"wan_ip\":\"${DDNS_DOMAIN}.duckdns.org\",\"is_ddns\":true}"
+				else
+					WAN_IP=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+					[ -z "$WAN_IP" ] && WAN_IP=""
+					echo "{\"wan_ip\":\"$WAN_IP\",\"is_ddns\":false}"
+				fi
+				;;
+
+			get_status)
+				# Build JSON directly with awk to avoid subshell issues
+				if ip link show "$WG_IFACE" >/dev/null 2>&1; then
+					LISTEN_PORT=$(uci -q get network.$WG_IFACE.listen_port 2>/dev/null || echo "51820")
+					ADDRESSES=$(uci -q get network.$WG_IFACE.addresses 2>/dev/null || echo "")
+					NOW=$(date +%s)
+
+					# Build UCI name lookup file: pubkey|section|description
+					> /tmp/laubter/wg_names.tmp
+					for sec in $(uci show network 2>/dev/null | grep "wireguard_${WG_IFACE}" | grep "=wireguard" | sed "s/=.*//;s/network\.//"); do
+						PK=$(uci -q get "network.$sec.public_key")
+						DESC=$(uci -q get "network.$sec.description")
+						echo "${PK}|${sec}|${DESC}" >> /tmp/laubter/wg_names.tmp
+					done
+
+					# Parse wg dump + merge names in one awk pass
+					PEERS_JSON=$(wg show "$WG_IFACE" dump 2>/dev/null | tail -n +2 | awk -F'\t' -v now="$NOW" '
+					BEGIN {
+						while ((getline line < "/tmp/laubter/wg_names.tmp") > 0) {
+							split(line, a, "|");
+							names[a[1]] = a[3];
+							sections[a[1]] = a[2];
+						}
+					}
+					NF >= 8 {
+						pk=$1; ep=$3; aip=$4; hs=$5; rx=$6; tx=$7;
+						online = (hs+0 > 0 && (now - hs) < 180) ? "true" : "false";
+						nm = (pk in names) ? names[pk] : "";
+						sc = (pk in sections) ? sections[pk] : "";
+						# Escape single quotes in names
+						gsub(/"/, "\\\"", nm);
+						if (n++) printf ",";
+						printf "{\"public_key\":\"%s\",\"endpoint\":\"%s\",\"allowed_ips\":\"%s\",\"latest_handshake\":\"%s\",\"rx_bytes\":\"%s\",\"tx_bytes\":\"%s\",\"online\":%s,\"name\":\"%s\",\"section\":\"%s\"}", pk, ep, aip, hs, rx, tx, online, nm, sc;
+					}')
+
+					echo "{\"running\":true,\"listen_port\":\"$LISTEN_PORT\",\"address\":\"$ADDRESSES\",\"peers\":[${PEERS_JSON}]}"
+
+					json_close_array
+				else
+					json_add_boolean "running" 0
+					json_add_array "peers"
+					json_close_array
+				fi
+
+				json_dump
+				;;
+
+			setup_server)
+				# One-click server setup: generate keys, create UCI config, add firewall rules
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var listen_port listen_port
+				json_get_var address address
+				[ -z "$listen_port" ] && listen_port="51820"
+				[ -z "$address" ] && address="10.0.0.1/24"
+
+				# Generate server keys if not exists
+				if [ ! -f "$KEY_DIR/server.key" ]; then
+					wg genkey > "$KEY_DIR/server.key" 2>/dev/null
+					chmod 600 "$KEY_DIR/server.key"
+				fi
+				PRIV_KEY=$(cat "$KEY_DIR/server.key")
+				PUB_KEY=$(echo "$PRIV_KEY" | wg pubkey 2>/dev/null)
+				echo "$PUB_KEY" > "$KEY_DIR/server.pub"
+
+				# Create WireGuard interface in UCI
+				uci -q delete network.$WG_IFACE 2>/dev/null
+				uci set network.$WG_IFACE=interface
+				uci set network.$WG_IFACE.proto='wireguard'
+				uci set network.$WG_IFACE.private_key="$PRIV_KEY"
+				uci set network.$WG_IFACE.listen_port="$listen_port"
+				uci add_list network.$WG_IFACE.addresses="$address"
+				uci commit network
+
+				# Add firewall rules
+				# Check if WG zone already exists
+				WG_ZONE_EXISTS=0
+				for idx in $(seq 0 20); do
+					ZNAME=$(uci -q get "firewall.@zone[$idx].name" 2>/dev/null)
+					[ -z "$ZNAME" ] && break
+					[ "$ZNAME" = "vpn" ] && WG_ZONE_EXISTS=1 && break
+				done
+
+				if [ "$WG_ZONE_EXISTS" = "0" ]; then
+					# Add zone
+					uci add firewall zone >/dev/null
+					uci set "firewall.@zone[-1].name=vpn"
+					uci set "firewall.@zone[-1].input=ACCEPT"
+					uci set "firewall.@zone[-1].output=ACCEPT"
+					uci set "firewall.@zone[-1].forward=ACCEPT"
+					uci add_list "firewall.@zone[-1].network=$WG_IFACE"
+					uci set "firewall.@zone[-1].masq=1"
+
+					# Add forwarding wg → lan
+					uci add firewall forwarding >/dev/null
+					uci set "firewall.@forwarding[-1].src=wg"
+					uci set "firewall.@forwarding[-1].dest=lan"
+
+					# Add forwarding wg → wan
+					uci add firewall forwarding >/dev/null
+					uci set "firewall.@forwarding[-1].src=wg"
+					uci set "firewall.@forwarding[-1].dest=wan"
+				fi
+
+				# Add port allow rule (check if exists)
+				WG_RULE_EXISTS=0
+				for idx in $(seq 0 50); do
+					RNAME=$(uci -q get "firewall.@rule[$idx].name" 2>/dev/null)
+					[ -z "$RNAME" ] && break
+					[ "$RNAME" = "Allow-WireGuard" ] && WG_RULE_EXISTS=1 && break
+				done
+
+				if [ "$WG_RULE_EXISTS" = "0" ]; then
+					uci add firewall rule >/dev/null
+					uci set "firewall.@rule[-1].name=Allow-WireGuard"
+					uci set "firewall.@rule[-1].src=wan"
+					uci set "firewall.@rule[-1].dest_port=$listen_port"
+					uci set "firewall.@rule[-1].proto=udp"
+					uci set "firewall.@rule[-1].target=ACCEPT"
+				fi
+
+				uci commit firewall
+
+				# Bring up the interface
+				ifdown wg0 2>/dev/null; sleep 1; ifup wg0 2>/dev/null
+
+				echo "{\"status\":\"ok\",\"public_key\":\"$PUB_KEY\",\"listen_port\":\"$listen_port\",\"address\":\"$address\"}"
+				;;
+
+			add_peer)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var name name
+				json_get_var allowed_ip allowed_ip
+
+				[ -z "$name" ] && { echo '{"error":"name required"}'; exit 0; }
+
+				# Auto-assign IP if not provided
+				if [ -z "$allowed_ip" ]; then
+					# Find next available IP in 10.0.0.x
+					LAST=1
+					for sec in $(uci -q show network 2>/dev/null | grep "wireguard_${WG_IFACE}" | grep "allowed_ips" | sed "s/.*='//;s/'.*//" | sed 's|/32||' | sort -t. -k4 -n); do
+						NUM=$(echo "$sec" | cut -d. -f4)
+						[ "$NUM" -gt "$LAST" ] && LAST=$NUM
+					done
+					NEXT=$((LAST + 1))
+					allowed_ip="10.0.0.${NEXT}/32"
+				fi
+
+				# Generate peer keys
+				PEER_PRIV=$(wg genkey 2>/dev/null)
+				PEER_PUB=$(echo "$PEER_PRIV" | wg pubkey 2>/dev/null)
+				PSK=$(wg genpsk 2>/dev/null)
+
+				# Sanitize name for file storage
+				SEC_NAME=$(echo "$name" | tr ' ' '_' | tr -cd 'a-zA-Z0-9_')
+
+				# Store peer private key (needed for generating client config)
+				echo "$PEER_PRIV" > "$KEY_DIR/peer_${SEC_NAME}.key"
+				chmod 600 "$KEY_DIR/peer_${SEC_NAME}.key"
+				echo "$PSK" > "$KEY_DIR/peer_${SEC_NAME}.psk"
+				chmod 600 "$KEY_DIR/peer_${SEC_NAME}.psk"
+
+				# Add peer to UCI using anonymous section (the correct way for WireGuard)
+				uci add network "wireguard_${WG_IFACE}" >/dev/null
+				uci set "network.@wireguard_${WG_IFACE}[-1].description=$name"
+				uci set "network.@wireguard_${WG_IFACE}[-1].public_key=$PEER_PUB"
+				uci set "network.@wireguard_${WG_IFACE}[-1].preshared_key=$PSK"
+				uci add_list "network.@wireguard_${WG_IFACE}[-1].allowed_ips=$allowed_ip"
+				uci set "network.@wireguard_${WG_IFACE}[-1].persistent_keepalive=25"
+				uci commit network
+
+				# Reload WireGuard
+				ifdown wg0 2>/dev/null; sleep 1; ifup wg0 2>/dev/null
+
+				# Get client IP (without /32)
+				CLIENT_IP=$(echo "$allowed_ip" | sed 's|/32||;s|/24||')
+
+				echo "{\"status\":\"ok\",\"name\":\"$name\",\"section\":\"$SEC_NAME\",\"public_key\":\"$PEER_PUB\",\"private_key\":\"$PEER_PRIV\",\"psk\":\"$PSK\",\"allowed_ip\":\"$allowed_ip\",\"client_ip\":\"$CLIENT_IP\"}"
+				;;
+
+			remove_peer)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var name name
+				[ -z "$name" ] && { echo '{"error":"name required"}'; exit 0; }
+
+				uci -q delete "network.$name" 2>/dev/null
+				uci commit network
+				rm -f "$KEY_DIR/peer_${name}.key" "$KEY_DIR/peer_${name}.psk"
+				ifdown wg0 2>/dev/null; sleep 1; ifup wg0 2>/dev/null
+
+				echo '{"status":"ok"}'
+				;;
+
+			get_client_config)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var peer_name peer_name
+				[ -z "$peer_name" ] && { echo '{"error":"peer_name required"}'; exit 0; }
+
+				# Read server info
+				SERVER_PUB=$(cat "$KEY_DIR/server.pub" 2>/dev/null)
+				LISTEN_PORT=$(uci -q get "network.$WG_IFACE.listen_port" 2>/dev/null || echo "51820")
+				# Prefer DDNS hostname for endpoint
+				DDNS_ENABLED=$(uci -q get laubter.ddns.enabled 2>/dev/null || echo "0")
+				DDNS_DOMAIN=$(uci -q get laubter.ddns.domain 2>/dev/null || echo "")
+				if [ "$DDNS_ENABLED" = "1" ] && [ -n "$DDNS_DOMAIN" ]; then
+					WAN_IP="${DDNS_DOMAIN}.duckdns.org"
+				else
+					WAN_IP=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+				fi
+				DNS="192.168.50.1"
+
+				# Read peer info
+				PEER_PRIV=$(cat "$KEY_DIR/peer_${peer_name}.key" 2>/dev/null)
+				PSK=$(cat "$KEY_DIR/peer_${peer_name}.psk" 2>/dev/null)
+				ALLOWED_IP=$(uci -q get "network.${peer_name}.allowed_ips" 2>/dev/null)
+				CLIENT_IP=$(echo "$ALLOWED_IP" | sed 's|/32|/24|')
+
+				if [ -z "$PEER_PRIV" ] || [ -z "$SERVER_PUB" ]; then
+					echo '{"error":"Missing keys for this peer"}'
+					exit 0
+				fi
+
+				CONFIG="[Interface]
+PrivateKey = $PEER_PRIV
+Address = $CLIENT_IP
+DNS = $DNS
+
+[Peer]
+PublicKey = $SERVER_PUB
+PresharedKey = $PSK
+Endpoint = ${WAN_IP}:${LISTEN_PORT}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25"
+
+				# Escape for JSON
+				CONFIG_JSON=$(echo "$CONFIG" | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}')
+
+				echo "{\"config\":\"$CONFIG_JSON\"}"
+				;;
+
+			generate_qr)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var peer_name peer_name
+				[ -z "$peer_name" ] && { echo '{"error":"peer_name required"}'; exit 0; }
+
+				# Build config same as get_client_config
+				SERVER_PUB=$(cat "$KEY_DIR/server.pub" 2>/dev/null)
+				LISTEN_PORT=$(uci -q get "network.$WG_IFACE.listen_port" 2>/dev/null || echo "51820")
+				DDNS_ENABLED=$(uci -q get laubter.ddns.enabled 2>/dev/null || echo "0")
+				DDNS_DOMAIN=$(uci -q get laubter.ddns.domain 2>/dev/null || echo "")
+				if [ "$DDNS_ENABLED" = "1" ] && [ -n "$DDNS_DOMAIN" ]; then
+					WAN_IP="${DDNS_DOMAIN}.duckdns.org"
+				else
+					WAN_IP=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+				fi
+				DNS="192.168.50.1"
+				PEER_PRIV=$(cat "$KEY_DIR/peer_${peer_name}.key" 2>/dev/null)
+				PSK=$(cat "$KEY_DIR/peer_${peer_name}.psk" 2>/dev/null)
+				ALLOWED_IP=$(uci -q get "network.${peer_name}.allowed_ips" 2>/dev/null)
+				CLIENT_IP=$(echo "$ALLOWED_IP" | sed 's|/32|/24|')
+
+				if [ -z "$PEER_PRIV" ] || [ -z "$SERVER_PUB" ]; then
+					echo '{"error":"Missing keys"}'
+					exit 0
+				fi
+
+				CONFIG="[Interface]
+PrivateKey = $PEER_PRIV
+Address = $CLIENT_IP
+DNS = $DNS
+
+[Peer]
+PublicKey = $SERVER_PUB
+PresharedKey = $PSK
+Endpoint = ${WAN_IP}:${LISTEN_PORT}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25"
+
+				# Generate QR as SVG (PNG disabled in OpenWrt qrencode build)
+				QR_SVG=$(echo "$CONFIG" | qrencode -t SVG -o - 2>/dev/null)
+
+				if [ -n "$QR_SVG" ]; then
+					# Base64 encode the SVG for safe JSON transport
+					QR_B64=$(echo "$QR_SVG" | base64 | tr -d '\n')
+					echo "{\"qr_svg_base64\":\"$QR_B64\"}"
+				else
+					echo '{"error":"Failed to generate QR code. Is qrencode installed?"}'
+				fi
+				;;
+		esac
+		;;
+esac

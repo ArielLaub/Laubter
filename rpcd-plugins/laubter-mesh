@@ -1,0 +1,241 @@
+#!/bin/sh
+# laubter-mesh: Generic mesh WiFi integration proxy for Laubter
+# Currently implements ASUS AiMesh provider
+# Credentials: username in UCI, password in a chmod 600 file
+
+. /usr/share/libubox/jshn.sh
+
+DATA_DIR="/tmp/laubter/mesh"
+PASS_FILE="/etc/laubter_mesh_secret"
+CACHE_TTL=5
+
+mkdir -p "$DATA_DIR"
+
+get_config() {
+	MESH_PROVIDER=$(uci -q get laubter.mesh.provider 2>/dev/null || echo "asus")
+	MESH_HOST=$(uci -q get laubter.mesh.host 2>/dev/null || echo "192.168.50.2")
+	MESH_PORT=$(uci -q get laubter.mesh.port 2>/dev/null || echo "8443")
+	MESH_PROTO=$(uci -q get laubter.mesh.proto 2>/dev/null || echo "https")
+	MESH_USER=$(uci -q get laubter.mesh.username 2>/dev/null || echo "admin")
+	MESH_PASS=""
+	[ -f "$PASS_FILE" ] && MESH_PASS=$(cat "$PASS_FILE" 2>/dev/null)
+	MESH_URL="${MESH_PROTO}://${MESH_HOST}:${MESH_PORT}"
+}
+
+asus_login() {
+	get_config
+	[ -z "$MESH_PASS" ] && return 1
+
+	AUTH_B64=$(printf '%s:%s' "$MESH_USER" "$MESH_PASS" | base64 | tr -d '\n')
+
+	# Use ASUS app API (User-Agent trick) — works alongside browser sessions
+	RESP=$(curl -sk -X POST "${MESH_URL}/login.cgi" \
+		-H "user-agent: asusrouter-Android-DUTUtil-1.0.0.245" \
+		-d "login_authorization=${AUTH_B64}" 2>/dev/null)
+
+	# App API returns JSON with asus_token
+	TOKEN=$(echo "$RESP" | grep -o '"asus_token":"[^"]*"' | cut -d'"' -f4)
+
+	if [ -n "$TOKEN" ]; then
+		echo "$TOKEN" > "$DATA_DIR/.token"
+		date +%s > "$DATA_DIR/.auth_time"
+		return 0
+	fi
+
+	return 1
+}
+
+asus_ensure_auth() {
+	if [ -f "$DATA_DIR/.auth_time" ]; then
+		AUTH_TIME=$(cat "$DATA_DIR/.auth_time" 2>/dev/null || echo 0)
+		NOW=$(date +%s)
+		AGE=$((NOW - AUTH_TIME))
+		[ "$AGE" -lt 1200 ] && return 0
+	fi
+	asus_login
+}
+
+asus_fetch() {
+	local hook="$1"
+	local cache_key=$(printf '%s' "$hook" | md5sum | cut -c1-12)
+	local cache_file="$DATA_DIR/cache_${cache_key}.json"
+
+	if [ -f "$cache_file" ]; then
+		NOW=$(date +%s)
+		FILE_TIME=$(date -r "$cache_file" +%s 2>/dev/null || echo 0)
+		AGE=$((NOW - FILE_TIME))
+		[ "$AGE" -lt "$CACHE_TTL" ] && cat "$cache_file" && return 0
+	fi
+
+	asus_ensure_auth || return 1
+
+	get_config
+	TOKEN=$(cat "$DATA_DIR/.token" 2>/dev/null)
+
+	RESULT=$(curl -sk \
+		-H "Cookie: asus_s_token=${TOKEN}" \
+		-H "user-agent: asusrouter-Android-DUTUtil-1.0.0.245" \
+		"${MESH_URL}/appGet.cgi?hook=${hook}" 2>/dev/null)
+
+	if echo "$RESULT" | grep -q "Main_Login"; then
+		asus_login || return 1
+		TOKEN=$(cat "$DATA_DIR/.token" 2>/dev/null)
+		RESULT=$(curl -sk \
+			-H "Cookie: asus_s_token=${TOKEN}" \
+			-H "user-agent: asusrouter-Android-DUTUtil-1.0.0.245" \
+			"${MESH_URL}/appGet.cgi?hook=${hook}" 2>/dev/null)
+	fi
+
+	[ -n "$RESULT" ] && echo "$RESULT" > "$cache_file" && echo "$RESULT" || echo '{}'
+}
+
+case "$1" in
+	list)
+		cat <<-'EOF'
+{
+	"get_nodes": {},
+	"get_clients": {},
+	"get_topology": {},
+	"get_wireless_clients": {},
+	"get_wired_clients": {},
+	"get_info": {},
+	"bind_client": { "client_mac": "str", "target_mac": "str", "band": "str" },
+	"configure": { "host": "str", "port": "str", "proto": "str", "username": "str", "password": "str", "provider": "str" },
+	"get_config": {},
+	"test_connection": {}
+}
+EOF
+		;;
+	call)
+		case "$2" in
+			get_nodes)
+				RAW=$(asus_fetch "get_cfg_clientlist()")
+				[ -z "$RAW" ] && echo '{"get_cfg_clientlist":[]}' || echo "$RAW"
+				;;
+			get_clients)
+				RAW=$(asus_fetch "get_clientlist()")
+				[ -z "$RAW" ] && echo '{"get_clientlist":{}}' || echo "$RAW"
+				;;
+			get_topology)
+				RAW=$(asus_fetch "get_allclientlist()")
+				[ -z "$RAW" ] && echo '{"get_allclientlist":{}}' || echo "$RAW"
+				;;
+			get_wireless_clients)
+				asus_fetch "get_wclientlist()"
+				;;
+			get_wired_clients)
+				asus_fetch "get_wiredclientlist()"
+				;;
+			get_info)
+				asus_fetch "nvram_get(wl0_ssid)%3Bnvram_get(wl1_ssid)%3Bnvram_get(wl2_ssid)%3Bnvram_get(productid)%3Bnvram_get(firmver)%3Bnvram_get(buildno)%3Bnvram_get(lan_ipaddr)"
+				;;
+			configure)
+				read -r input
+				json_load "$input" 2>/dev/null
+
+				json_get_var host host
+				json_get_var port port
+				json_get_var proto proto
+				json_get_var username username
+				json_get_var password password
+				json_get_var provider provider
+
+				uci -q get laubter.mesh >/dev/null 2>&1 || {
+					touch /etc/config/laubter
+					uci set laubter.mesh=mesh
+				}
+
+				[ -n "$host" ] && uci set laubter.mesh.host="$host"
+				[ -n "$port" ] && uci set laubter.mesh.port="$port"
+				[ -n "$proto" ] && uci set laubter.mesh.proto="$proto"
+				[ -n "$username" ] && uci set laubter.mesh.username="$username"
+				[ -n "$provider" ] && uci set laubter.mesh.provider="$provider"
+				uci commit laubter
+
+				# Store password in a separate file with restricted permissions
+				if [ -n "$password" ]; then
+					printf '%s' "$password" > "$PASS_FILE"
+					chmod 600 "$PASS_FILE"
+				fi
+
+				# Clear cache
+				rm -f "$DATA_DIR"/cache_*.json "$DATA_DIR/.auth_time"
+
+				echo '{"status":"ok"}'
+				;;
+			get_config)
+				get_config
+				HAS_PASS=0
+				[ -n "$MESH_PASS" ] && HAS_PASS=1
+				json_init
+				json_add_string "provider" "$MESH_PROVIDER"
+				json_add_string "host" "$MESH_HOST"
+				json_add_string "port" "$MESH_PORT"
+				json_add_string "proto" "$MESH_PROTO"
+				json_add_string "username" "$MESH_USER"
+				json_add_boolean "has_password" "$HAS_PASS"
+				json_dump
+				;;
+			bind_client)
+				# Bind a client to a specific mesh node
+				# Params: client_mac, target_mac (node to bind to), band (0=auto)
+				# To unbind: target_mac=""
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var client_mac client_mac
+				json_get_var target_mac target_mac
+				json_get_var band band
+				[ -z "$band" ] && band="0"
+				[ -z "$client_mac" ] && { echo '{"error":"client_mac required"}'; exit 0; }
+
+				asus_ensure_auth || { echo '{"error":"Not authenticated"}'; exit 0; }
+				get_config
+				TOKEN=$(cat "$DATA_DIR/.token" 2>/dev/null)
+
+				if [ -z "$target_mac" ]; then
+					# Unbind
+					RESULT=$(curl -sk -X POST \
+						-H "Cookie: asus_s_token=${TOKEN}" \
+						-H "user-agent: asusrouter-Android-DUTUtil-1.0.0.245" \
+						"${MESH_URL}/applyapp.cgi" \
+						-d "action_mode=aimesh_unbind&client_mac=${client_mac}" 2>/dev/null)
+				else
+					# Bind
+					RESULT=$(curl -sk -X POST \
+						-H "Cookie: asus_s_token=${TOKEN}" \
+						-H "user-agent: asusrouter-Android-DUTUtil-1.0.0.245" \
+						"${MESH_URL}/applyapp.cgi" \
+						-d "action_mode=aimesh_bind&client_mac=${client_mac}&target_mac=${target_mac}&band=${band}" 2>/dev/null)
+				fi
+
+				# Clear cache to refresh client data
+				rm -f "$DATA_DIR"/cache_*.json
+				echo '{"status":"ok"}'
+				;;
+
+			test_connection)
+				get_config
+				if [ -z "$MESH_PASS" ]; then
+					echo '{"status":"error","message":"No password configured"}'
+					exit 0
+				fi
+				# Clear old auth to force fresh login
+				rm -f "$DATA_DIR/.auth_time" "$DATA_DIR/.token" "$DATA_DIR/cookies.txt"
+				if asus_login; then
+					TOKEN=$(cat "$DATA_DIR/.token" 2>/dev/null)
+					RAW=$(curl -sk \
+						-H "Cookie: asus_s_token=${TOKEN}" \
+						-H "user-agent: asusrouter-Android-DUTUtil-1.0.0.245" \
+						"${MESH_URL}/appGet.cgi?hook=nvram_get(productid)" 2>/dev/null)
+					if echo "$RAW" | grep -q "productid"; then
+						echo "{\"status\":\"ok\",\"data\":$RAW}"
+					else
+						echo '{"status":"error","message":"Logged in but could not read data. The router may have rate-limited login attempts. Wait 1-2 minutes and try again."}'
+					fi
+				else
+					echo '{"status":"error","message":"Authentication failed — check username/password. If correct, wait 1-2 minutes (ASUS rate limits login attempts)."}'
+				fi
+				;;
+		esac
+		;;
+esac

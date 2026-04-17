@@ -1,0 +1,181 @@
+#!/bin/sh
+# laubter-bandwidth: Persistent bandwidth data collection for Laubter
+# Stores per-second samples in a ring buffer file (24h retention)
+# Also tracks all-time peak and daily totals
+
+. /usr/share/libubox/jshn.sh
+
+DATA_DIR="/tmp/laubter"
+SAMPLES_FILE="$DATA_DIR/bandwidth.json"
+STATS_FILE="$DATA_DIR/bandwidth_stats.json"
+LOCK_FILE="$DATA_DIR/bandwidth.lock"
+WAN_DEV=""
+
+# Ensure data dir exists
+mkdir -p "$DATA_DIR"
+
+# Auto-detect WAN device
+get_wan_device() {
+	if [ -z "$WAN_DEV" ]; then
+		WAN_DEV=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)
+		[ -z "$WAN_DEV" ] && WAN_DEV=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@.device' 2>/dev/null)
+		[ -z "$WAN_DEV" ] && WAN_DEV="eth1"
+	fi
+	echo "$WAN_DEV"
+}
+
+# Initialize stats file if missing
+init_stats() {
+	if [ ! -f "$STATS_FILE" ]; then
+		cat > "$STATS_FILE" <<-STATEOF
+{
+	"peak_rx_rate": 0,
+	"peak_tx_rate": 0,
+	"peak_rx_time": 0,
+	"peak_tx_time": 0,
+	"today_rx_bytes": 0,
+	"today_tx_bytes": 0,
+	"today_date": "$(date +%Y-%m-%d)",
+	"prev_rx_bytes": 0,
+	"prev_tx_bytes": 0,
+	"prev_time": 0
+}
+STATEOF
+	fi
+}
+
+case "$1" in
+	list)
+		echo '{ "get_data": { "seconds": 3600 }, "get_stats": {}, "record_sample": {} }'
+		;;
+	call)
+		case "$2" in
+			record_sample)
+				# Called periodically by cron to record a bandwidth sample
+				init_stats
+
+				dev=$(get_wan_device)
+				rx_bytes=$(cat "/sys/class/net/$dev/statistics/rx_bytes" 2>/dev/null || echo 0)
+				tx_bytes=$(cat "/sys/class/net/$dev/statistics/tx_bytes" 2>/dev/null || echo 0)
+				now=$(date +%s)
+
+				# Read previous values from stats
+				prev_rx=$(jsonfilter -i "$STATS_FILE" -e '@.prev_rx_bytes' 2>/dev/null || echo 0)
+				prev_tx=$(jsonfilter -i "$STATS_FILE" -e '@.prev_tx_bytes' 2>/dev/null || echo 0)
+				prev_time=$(jsonfilter -i "$STATS_FILE" -e '@.prev_time' 2>/dev/null || echo 0)
+				peak_rx=$(jsonfilter -i "$STATS_FILE" -e '@.peak_rx_rate' 2>/dev/null || echo 0)
+				peak_tx=$(jsonfilter -i "$STATS_FILE" -e '@.peak_tx_rate' 2>/dev/null || echo 0)
+				peak_rx_time=$(jsonfilter -i "$STATS_FILE" -e '@.peak_rx_time' 2>/dev/null || echo 0)
+				peak_tx_time=$(jsonfilter -i "$STATS_FILE" -e '@.peak_tx_time' 2>/dev/null || echo 0)
+				today_rx=$(jsonfilter -i "$STATS_FILE" -e '@.today_rx_bytes' 2>/dev/null || echo 0)
+				today_tx=$(jsonfilter -i "$STATS_FILE" -e '@.today_tx_bytes' 2>/dev/null || echo 0)
+				today_date=$(jsonfilter -i "$STATS_FILE" -e '@.today_date' 2>/dev/null || echo "")
+				current_date=$(date +%Y-%m-%d)
+
+				# Reset daily totals if date changed
+				if [ "$today_date" != "$current_date" ]; then
+					today_rx=0
+					today_tx=0
+				fi
+
+				rx_rate=0
+				tx_rate=0
+				if [ "$prev_time" -gt 0 ] 2>/dev/null; then
+					dt=$((now - prev_time))
+					if [ "$dt" -gt 0 ]; then
+						rx_diff=$((rx_bytes - prev_rx))
+						tx_diff=$((tx_bytes - prev_tx))
+						# Handle counter wrap
+						[ "$rx_diff" -lt 0 ] && rx_diff=0
+						[ "$tx_diff" -lt 0 ] && tx_diff=0
+						rx_rate=$((rx_diff / dt))
+						tx_rate=$((tx_diff / dt))
+						today_rx=$((today_rx + rx_diff))
+						today_tx=$((today_tx + tx_diff))
+					fi
+				fi
+
+				# Update peaks
+				if [ "$rx_rate" -gt "$peak_rx" ] 2>/dev/null; then
+					peak_rx=$rx_rate
+					peak_rx_time=$now
+				fi
+				if [ "$tx_rate" -gt "$peak_tx" ] 2>/dev/null; then
+					peak_tx=$tx_rate
+					peak_tx_time=$now
+				fi
+
+				# Append sample to ring buffer (one JSON line per sample)
+				echo "$now $rx_rate $tx_rate" >> "$DATA_DIR/samples.log"
+
+				# Trim to 24h (86400 seconds = 86400 lines at 1s interval, but we sample every 5s so ~17280 lines)
+				cutoff=$((now - 86400))
+				if [ -f "$DATA_DIR/samples.log" ]; then
+					awk -v cutoff="$cutoff" '$1 >= cutoff' "$DATA_DIR/samples.log" > "$DATA_DIR/samples.tmp" 2>/dev/null
+					mv "$DATA_DIR/samples.tmp" "$DATA_DIR/samples.log" 2>/dev/null
+				fi
+
+				# Update stats file
+				cat > "$STATS_FILE" <<-STATEOF
+{
+	"peak_rx_rate": $peak_rx,
+	"peak_tx_rate": $peak_tx,
+	"peak_rx_time": $peak_rx_time,
+	"peak_tx_time": $peak_tx_time,
+	"today_rx_bytes": $today_rx,
+	"today_tx_bytes": $today_tx,
+	"today_date": "$current_date",
+	"prev_rx_bytes": $rx_bytes,
+	"prev_tx_bytes": $tx_bytes,
+	"prev_time": $now
+}
+STATEOF
+
+				echo '{"status":"ok"}'
+				;;
+
+			get_data)
+				# Return time-series data for the requested window
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var seconds seconds
+				[ -z "$seconds" ] && seconds=3600
+
+				now=$(date +%s)
+				cutoff=$((now - seconds))
+
+				json_init
+				json_add_array "timestamps"
+				json_close_array
+				json_add_array "rx_rates"
+				json_close_array
+				json_add_array "tx_rates"
+				json_close_array
+
+				if [ -f "$DATA_DIR/samples.log" ]; then
+					# Build JSON arrays from samples
+					ts_arr=""
+					rx_arr=""
+					tx_arr=""
+					while read -r ts rx tx; do
+						[ -z "$ts" ] && continue
+						[ "$ts" -lt "$cutoff" ] 2>/dev/null && continue
+						ts_arr="${ts_arr:+$ts_arr,}$ts"
+						rx_arr="${rx_arr:+$rx_arr,}$rx"
+						tx_arr="${tx_arr:+$tx_arr,}$tx"
+					done < "$DATA_DIR/samples.log"
+
+					echo "{\"timestamps\":[$ts_arr],\"rx_rates\":[$rx_arr],\"tx_rates\":[$tx_arr]}"
+				else
+					echo '{"timestamps":[],"rx_rates":[],"tx_rates":[]}'
+				fi
+				;;
+
+			get_stats)
+				# Return peak rates and daily totals
+				init_stats
+				cat "$STATS_FILE"
+				;;
+		esac
+		;;
+esac

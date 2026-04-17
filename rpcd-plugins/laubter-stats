@@ -1,0 +1,190 @@
+#!/bin/sh
+# laubter-stats: Background system metrics collector for Laubter
+# Collects: bandwidth, CPU, memory, temperature, connections
+# Stores in /tmp/laubter/metrics/ as time-series log files
+# Called every 5s by cron, also queryable via ubus
+
+DATA_DIR="/tmp/laubter/metrics"
+mkdir -p "$DATA_DIR"
+
+# Auto-detect WAN device
+get_wan_dev() {
+	local dev=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null)
+	[ -z "$dev" ] && dev=$(ubus call network.interface.wan status 2>/dev/null | jsonfilter -e '@.device' 2>/dev/null)
+	[ -z "$dev" ] && dev="eth1"
+	echo "$dev"
+}
+
+case "$1" in
+	list)
+		cat <<-'EOF'
+{
+	"record": {},
+	"get_history": { "seconds": 3600 },
+	"get_current": {},
+	"get_peaks": {}
+}
+EOF
+		;;
+	call)
+		case "$2" in
+			record)
+				# Called by cron every 5 seconds
+				NOW=$(date +%s)
+				WAN=$(get_wan_dev)
+
+				# Bandwidth
+				RX=$(cat /sys/class/net/$WAN/statistics/rx_bytes 2>/dev/null || echo 0)
+				TX=$(cat /sys/class/net/$WAN/statistics/tx_bytes 2>/dev/null || echo 0)
+
+				# CPU - parse /proc/stat
+				read cpu user nice sys idle iowait irq softirq rest < /proc/stat
+				CPU_TOTAL=$((user + nice + sys + idle + iowait + irq + softirq))
+				CPU_IDLE=$idle
+
+				# Memory
+				MEM_TOTAL=$(awk '/^MemTotal/ {print $2}' /proc/meminfo)
+				MEM_AVAIL=$(awk '/^MemAvailable/ {print $2}' /proc/meminfo)
+				MEM_USED=$((MEM_TOTAL - MEM_AVAIL))
+
+				# Temperature (millidegrees to centidegrees for compact storage)
+				TEMP=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)
+				TEMP_C=$((TEMP / 100))
+
+				# Connections
+				CONNS=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
+
+				# Compute rates from previous sample
+				PREV_FILE="$DATA_DIR/.prev"
+				RX_RATE=0
+				TX_RATE=0
+				CPU_PCT=0
+
+				if [ -f "$PREV_FILE" ]; then
+					read P_TIME P_RX P_TX P_CPU_TOTAL P_CPU_IDLE < "$PREV_FILE"
+					DT=$((NOW - P_TIME))
+					if [ "$DT" -gt 0 ]; then
+						RX_DIFF=$((RX - P_RX))
+						TX_DIFF=$((TX - P_TX))
+						[ "$RX_DIFF" -lt 0 ] && RX_DIFF=0
+						[ "$TX_DIFF" -lt 0 ] && TX_DIFF=0
+						RX_RATE=$((RX_DIFF / DT))
+						TX_RATE=$((TX_DIFF / DT))
+
+						CPU_D_TOTAL=$((CPU_TOTAL - P_CPU_TOTAL))
+						CPU_D_IDLE=$((CPU_IDLE - P_CPU_IDLE))
+						if [ "$CPU_D_TOTAL" -gt 0 ]; then
+							CPU_PCT=$(( (CPU_D_TOTAL - CPU_D_IDLE) * 100 / CPU_D_TOTAL ))
+						fi
+					fi
+				fi
+
+				# Save current as previous
+				echo "$NOW $RX $TX $CPU_TOTAL $CPU_IDLE" > "$PREV_FILE"
+
+				# Append to time-series log: ts rx_rate tx_rate cpu_pct mem_used_kb temp_centi conns
+				echo "$NOW $RX_RATE $TX_RATE $CPU_PCT $MEM_USED $TEMP_C $CONNS" >> "$DATA_DIR/history.log"
+
+				# Trim to 24h
+				CUTOFF=$((NOW - 86400))
+				if [ -f "$DATA_DIR/history.log" ]; then
+					awk -v c="$CUTOFF" '$1 >= c' "$DATA_DIR/history.log" > "$DATA_DIR/history.tmp" 2>/dev/null
+					mv "$DATA_DIR/history.tmp" "$DATA_DIR/history.log"
+				fi
+
+				# Update peaks
+				PEAKS_FILE="$DATA_DIR/peaks.json"
+				if [ ! -f "$PEAKS_FILE" ]; then
+					cat > "$PEAKS_FILE" <<-PEOF
+{"peak_rx":0,"peak_tx":0,"peak_cpu":0,"peak_temp":0,"peak_conns":0,"today_rx":0,"today_tx":0,"today_date":"$(date +%Y-%m-%d)"}
+PEOF
+				fi
+
+				PEAK_RX=$(jsonfilter -i "$PEAKS_FILE" -e '@.peak_rx' 2>/dev/null || echo 0)
+				PEAK_TX=$(jsonfilter -i "$PEAKS_FILE" -e '@.peak_tx' 2>/dev/null || echo 0)
+				PEAK_CPU=$(jsonfilter -i "$PEAKS_FILE" -e '@.peak_cpu' 2>/dev/null || echo 0)
+				PEAK_TEMP=$(jsonfilter -i "$PEAKS_FILE" -e '@.peak_temp' 2>/dev/null || echo 0)
+				PEAK_CONNS=$(jsonfilter -i "$PEAKS_FILE" -e '@.peak_conns' 2>/dev/null || echo 0)
+				TODAY_RX=$(jsonfilter -i "$PEAKS_FILE" -e '@.today_rx' 2>/dev/null || echo 0)
+				TODAY_TX=$(jsonfilter -i "$PEAKS_FILE" -e '@.today_tx' 2>/dev/null || echo 0)
+				TODAY_DATE=$(jsonfilter -i "$PEAKS_FILE" -e '@.today_date' 2>/dev/null || echo "")
+				CUR_DATE=$(date +%Y-%m-%d)
+
+				[ "$TODAY_DATE" != "$CUR_DATE" ] && TODAY_RX=0 && TODAY_TX=0
+				[ "$RX_RATE" -gt "$PEAK_RX" ] && PEAK_RX=$RX_RATE
+				[ "$TX_RATE" -gt "$PEAK_TX" ] && PEAK_TX=$TX_RATE
+				[ "$CPU_PCT" -gt "$PEAK_CPU" ] && PEAK_CPU=$CPU_PCT
+				[ "$TEMP_C" -gt "$PEAK_TEMP" ] && PEAK_TEMP=$TEMP_C
+				[ "$CONNS" -gt "$PEAK_CONNS" ] && PEAK_CONNS=$CONNS
+
+				# Add bandwidth to daily total (rate * interval)
+				if [ -f "$PREV_FILE" ]; then
+					TODAY_RX=$((TODAY_RX + RX_RATE * 5))
+					TODAY_TX=$((TODAY_TX + TX_RATE * 5))
+				fi
+
+				cat > "$PEAKS_FILE" <<-PEOF
+{"peak_rx":$PEAK_RX,"peak_tx":$PEAK_TX,"peak_cpu":$PEAK_CPU,"peak_temp":$PEAK_TEMP,"peak_conns":$PEAK_CONNS,"today_rx":$TODAY_RX,"today_tx":$TODAY_TX,"today_date":"$CUR_DATE"}
+PEOF
+
+				echo '{"status":"ok"}'
+				;;
+
+			get_history)
+				read -r input
+				. /usr/share/libubox/jshn.sh
+				json_load "$input" 2>/dev/null
+				json_get_var seconds seconds
+				[ -z "$seconds" ] && seconds=3600
+
+				NOW=$(date +%s)
+				CUTOFF=$((NOW - seconds))
+
+				if [ -f "$DATA_DIR/history.log" ]; then
+					TS="" RXR="" TXR="" CPU="" MEM="" TMP="" CON=""
+					while read ts rx tx cpu mem temp conns; do
+						[ -z "$ts" ] && continue
+						[ "$ts" -lt "$CUTOFF" ] 2>/dev/null && continue
+						TS="${TS:+$TS,}$ts"
+						RXR="${RXR:+$RXR,}$rx"
+						TXR="${TXR:+$TXR,}$tx"
+						CPU="${CPU:+$CPU,}$cpu"
+						MEM="${MEM:+$MEM,}$mem"
+						TMP="${TMP:+$TMP,}$temp"
+						CON="${CON:+$CON,}$conns"
+					done < "$DATA_DIR/history.log"
+
+					echo "{\"ts\":[$TS],\"rx\":[$RXR],\"tx\":[$TXR],\"cpu\":[$CPU],\"mem\":[$MEM],\"temp\":[$TMP],\"conns\":[$CON]}"
+				else
+					echo '{"ts":[],"rx":[],"tx":[],"cpu":[],"mem":[],"temp":[],"conns":[]}'
+				fi
+				;;
+
+			get_current)
+				# Return latest sample
+				if [ -f "$DATA_DIR/history.log" ]; then
+					LAST=$(tail -1 "$DATA_DIR/history.log")
+					read ts rx tx cpu mem temp conns <<-LINE
+$LAST
+LINE
+					TEMP_FULL=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)
+					echo "{\"ts\":$ts,\"rx_rate\":$rx,\"tx_rate\":$tx,\"cpu_pct\":$cpu,\"mem_used_kb\":$mem,\"temp_mc\":$TEMP_FULL,\"conns\":$conns}"
+				else
+					TEMP_FULL=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)
+					MEM_T=$(awk '/^MemTotal/ {print $2}' /proc/meminfo)
+					MEM_A=$(awk '/^MemAvailable/ {print $2}' /proc/meminfo)
+					CONNS=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
+					echo "{\"ts\":$(date +%s),\"rx_rate\":0,\"tx_rate\":0,\"cpu_pct\":0,\"mem_used_kb\":$((MEM_T - MEM_A)),\"temp_mc\":$TEMP_FULL,\"conns\":$CONNS}"
+				fi
+				;;
+
+			get_peaks)
+				if [ -f "$DATA_DIR/peaks.json" ]; then
+					cat "$DATA_DIR/peaks.json"
+				else
+					echo '{"peak_rx":0,"peak_tx":0,"peak_cpu":0,"peak_temp":0,"peak_conns":0,"today_rx":0,"today_tx":0,"today_date":""}'
+				fi
+				;;
+		esac
+		;;
+esac

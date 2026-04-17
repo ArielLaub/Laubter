@@ -1,0 +1,96 @@
+#!/bin/sh
+# laubter-firewall: Firewall activity data for Laubter
+# Provides: nft ruleset summary, conntrack stats, recent log events
+
+. /usr/share/libubox/jshn.sh
+
+case "$1" in
+	list)
+		echo '{ "get_conntrack": {}, "get_recent_blocks": { "count": 50 }, "get_ruleset_summary": {} }'
+		;;
+	call)
+		case "$2" in
+			get_conntrack)
+				json_init
+				json_add_int "count" "$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)"
+				json_add_int "max" "$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 0)"
+				json_dump
+				;;
+
+			get_recent_blocks)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var count count
+				[ -z "$count" ] && count=50
+
+				# Parse recent firewall log entries for blocked connections
+				json_init
+				json_add_array "events"
+
+				logread 2>/dev/null | grep -i 'drop\|reject\|block' | tail -n "$count" | while read -r line; do
+					json_add_object ""
+
+					# Extract timestamp
+					ts=$(echo "$line" | awk '{print $1" "$2" "$3}')
+					json_add_string "time" "$ts"
+
+					# Extract source IP
+					src=$(echo "$line" | grep -oP 'SRC=\K[^ ]+' 2>/dev/null)
+					[ -n "$src" ] && json_add_string "src" "$src"
+
+					# Extract destination IP
+					dst=$(echo "$line" | grep -oP 'DST=\K[^ ]+' 2>/dev/null)
+					[ -n "$dst" ] && json_add_string "dst" "$dst"
+
+					# Extract protocol
+					proto=$(echo "$line" | grep -oP 'PROTO=\K[^ ]+' 2>/dev/null)
+					[ -n "$proto" ] && json_add_string "proto" "$proto"
+
+					# Extract dest port
+					dpt=$(echo "$line" | grep -oP 'DPT=\K[^ ]+' 2>/dev/null)
+					[ -n "$dpt" ] && json_add_string "dport" "$dpt"
+
+					# Extract interface
+					inf=$(echo "$line" | grep -oP 'IN=\K[^ ]+' 2>/dev/null)
+					[ -n "$inf" ] && json_add_string "iface" "$inf"
+
+					json_add_string "action" "drop"
+					json_add_string "raw" "$line"
+
+					json_close_object
+				done
+
+				json_close_array
+				json_dump
+				;;
+
+			get_ruleset_summary)
+				# Return a summary of nft chains and rule counts
+				json_init
+				json_add_array "chains"
+
+				nft list chains 2>/dev/null | while read -r line; do
+					case "$line" in
+						*"chain "*)
+							chain_name=$(echo "$line" | awk '{print $NF}')
+							table_name=$(echo "$line" | awk '{print $(NF-2)}')
+							family=$(echo "$line" | awk '{print $2}')
+
+							rule_count=$(nft list chain "$family" "$table_name" "$chain_name" 2>/dev/null | grep -c '^\s')
+
+							json_add_object ""
+							json_add_string "family" "$family"
+							json_add_string "table" "$table_name"
+							json_add_string "chain" "$chain_name"
+							json_add_int "rules" "$rule_count"
+							json_close_object
+							;;
+					esac
+				done
+
+				json_close_array
+				json_dump
+				;;
+		esac
+		;;
+esac

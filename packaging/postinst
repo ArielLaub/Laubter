@@ -1,0 +1,87 @@
+#!/bin/sh
+
+# === Dependencies ===
+# Install required packages if missing
+for pkg in curl coreutils-base64 wireguard-tools qrencode nlbwmon mosquitto-client-nossl; do
+    if ! apk info -e "$pkg" >/dev/null 2>&1; then
+        echo "Installing dependency: $pkg"
+        apk add "$pkg" 2>/dev/null
+    fi
+done
+
+# === uhttpd config for Laubter UI (port 3000) ===
+if ! uci -q get uhttpd.laubter > /dev/null; then
+    uci batch <<-EOF
+        set uhttpd.laubter=uhttpd
+        set uhttpd.laubter.home='/usr/share/laubter'
+        set uhttpd.laubter.listen_http='0.0.0.0:3000'
+        set uhttpd.laubter.listen_https='0.0.0.0:3443'
+        set uhttpd.laubter.ubus_prefix='/ubus'
+        set uhttpd.laubter.max_requests='3'
+        set uhttpd.laubter.error_page='/index.html'
+        set uhttpd.laubter.cert='/etc/uhttpd.crt'
+        set uhttpd.laubter.key='/etc/uhttpd.key'
+        commit uhttpd
+EOF
+fi
+
+# === Metrics collection service (5-second interval) ===
+cat > /etc/init.d/laubter-metrics <<'INITEOF'
+#!/bin/sh /etc/rc.common
+START=99
+STOP=10
+USE_PROCD=1
+start_service() {
+    procd_open_instance
+    procd_set_param command /bin/sh -c "while true; do ubus call laubter-stats record 2>/dev/null; sleep 5; done"
+    procd_set_param respawn
+    procd_set_param stdout 0
+    procd_set_param stderr 0
+    procd_close_instance
+}
+INITEOF
+chmod +x /etc/init.d/laubter-metrics
+/etc/init.d/laubter-metrics enable
+/etc/init.d/laubter-metrics start
+
+# === MQTT publisher service (only if MQTT is enabled) ===
+cat > /etc/init.d/laubter-mqtt <<'INITEOF'
+#!/bin/sh /etc/rc.common
+START=99
+STOP=10
+USE_PROCD=1
+start_service() {
+    # Only start if MQTT is enabled in config
+    local enabled
+    enabled=$(uci -q get laubter.mqtt.enabled)
+    [ "$enabled" = "1" ] || return 0
+
+    procd_open_instance
+    procd_set_param command /usr/bin/laubter-mqtt-pub
+    procd_set_param respawn
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+}
+INITEOF
+chmod +x /etc/init.d/laubter-mqtt
+
+# Enable and start MQTT service only if MQTT is enabled in config
+if [ "$(uci -q get laubter.mqtt.enabled)" = "1" ]; then
+    /etc/init.d/laubter-mqtt enable
+    /etc/init.d/laubter-mqtt start
+fi
+
+# === Make rpcd plugins executable ===
+chmod +x /usr/libexec/rpcd/laubter-* 2>/dev/null
+
+# === Create data directories ===
+mkdir -p /tmp/laubter/metrics /tmp/laubter/mesh
+
+# === Restart services ===
+/etc/init.d/rpcd restart
+/etc/init.d/uhttpd restart
+
+echo "Laubter installed. Access at http://$(uci get network.lan.ipaddr 2>/dev/null || echo '192.168.1.1'):3000"
+
+exit 0

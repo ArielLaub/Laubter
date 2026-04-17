@@ -1,0 +1,347 @@
+#!/bin/sh
+# laubter-mqtt: MQTT/Home Assistant integration for Laubter
+# Manages config, tracked devices, zone mappings
+
+. /usr/share/libubox/jshn.sh
+
+PASS_FILE="/etc/laubter_mqtt_secret"
+
+get_mqtt_config() {
+	MQTT_ENABLED=$(uci -q get laubter.mqtt.enabled 2>/dev/null || echo "0")
+	MQTT_BROKER=$(uci -q get laubter.mqtt.broker 2>/dev/null || echo "192.168.50.50")
+	MQTT_PORT=$(uci -q get laubter.mqtt.port 2>/dev/null || echo "1883")
+	MQTT_USER=$(uci -q get laubter.mqtt.username 2>/dev/null || echo "")
+	MQTT_PASS=""
+	[ -f "$PASS_FILE" ] && MQTT_PASS=$(cat "$PASS_FILE" 2>/dev/null)
+	MQTT_PREFIX=$(uci -q get laubter.mqtt.prefix 2>/dev/null || echo "laubter")
+	MQTT_INTERVAL=$(uci -q get laubter.mqtt.interval 2>/dev/null || echo "10")
+}
+
+case "$1" in
+	list)
+		cat <<-'EOF'
+{
+	"get_config": {},
+	"configure": { "enabled": "str", "broker": "str", "port": "str", "username": "str", "password": "str", "prefix": "str", "interval": "str" },
+	"test_connection": {},
+	"get_tracked_devices": {},
+	"add_tracked_device": { "name": "str", "mac": "str", "entity_id": "str" },
+	"remove_tracked_device": { "mac": "str" },
+	"get_zone_mappings": {},
+	"set_zone_mapping": { "ap_mac": "str", "zone": "str", "zone_name": "str", "ap_name": "str" },
+	"get_ha_zones": {},
+	"set_ha_token": { "token": "str" },
+	"publish_discovery": {}
+}
+EOF
+		;;
+	call)
+		case "$2" in
+			get_config)
+				get_mqtt_config
+				json_init
+				json_add_string "enabled" "$MQTT_ENABLED"
+				json_add_string "broker" "$MQTT_BROKER"
+				json_add_string "port" "$MQTT_PORT"
+				json_add_string "username" "$MQTT_USER"
+				json_add_boolean "has_password" $([ -n "$MQTT_PASS" ] && echo 1 || echo 0)
+				json_add_string "prefix" "$MQTT_PREFIX"
+				json_add_string "interval" "$MQTT_INTERVAL"
+
+				# Check if service is running
+				pidof laubter-mqtt-pub >/dev/null 2>&1
+				json_add_boolean "running" $?
+
+				json_dump
+				;;
+
+			configure)
+				read -r input
+				json_load "$input" 2>/dev/null
+
+				json_get_var enabled enabled
+				json_get_var broker broker
+				json_get_var port port
+				json_get_var username username
+				json_get_var password password
+				json_get_var prefix prefix
+				json_get_var interval interval
+
+				touch /etc/config/laubter
+				uci -q get laubter.mqtt >/dev/null 2>&1 || uci set laubter.mqtt=mqtt
+
+				[ -n "$enabled" ] && uci set laubter.mqtt.enabled="$enabled"
+				[ -n "$broker" ] && uci set laubter.mqtt.broker="$broker"
+				[ -n "$port" ] && uci set laubter.mqtt.port="$port"
+				[ -n "$username" ] && uci set laubter.mqtt.username="$username"
+				[ -n "$prefix" ] && uci set laubter.mqtt.prefix="$prefix"
+				[ -n "$interval" ] && uci set laubter.mqtt.interval="$interval"
+				uci commit laubter
+
+				if [ -n "$password" ]; then
+					printf '%s' "$password" > "$PASS_FILE"
+					chmod 600 "$PASS_FILE"
+				fi
+
+				# Restart service if enabled
+				if [ "$(uci -q get laubter.mqtt.enabled)" = "1" ]; then
+					/etc/init.d/laubter-mqtt restart 2>/dev/null
+				else
+					/etc/init.d/laubter-mqtt stop 2>/dev/null
+				fi
+
+				echo '{"status":"ok"}'
+				;;
+
+			test_connection)
+				get_mqtt_config
+				AUTH=""
+				[ -n "$MQTT_USER" ] && AUTH="-u $MQTT_USER"
+				[ -n "$MQTT_PASS" ] && AUTH="$AUTH -P $MQTT_PASS"
+				RESULT=$(mosquitto_pub -h "$MQTT_BROKER" -p "$MQTT_PORT" $AUTH -t "${MQTT_PREFIX}/test" -m "connection_test" 2>&1)
+				if [ $? -eq 0 ]; then
+					echo '{"status":"ok","message":"Connected to MQTT broker"}'
+				else
+					echo "{\"status\":\"error\",\"message\":\"$(echo "$RESULT" | head -1 | sed 's/"/\\"/g')\"}"
+				fi
+				;;
+
+			get_tracked_devices)
+				json_init
+				json_add_array "devices"
+				IDX=0
+				while true; do
+					NAME=$(uci -q get "laubter.@tracked_device[$IDX].name" 2>/dev/null)
+					[ -z "$NAME" ] && break
+					MAC=$(uci -q get "laubter.@tracked_device[$IDX].mac" 2>/dev/null)
+					ENTITY=$(uci -q get "laubter.@tracked_device[$IDX].entity_id" 2>/dev/null)
+					json_add_object ""
+					json_add_string "name" "$NAME"
+					json_add_string "mac" "$MAC"
+					json_add_string "entity_id" "$ENTITY"
+					json_add_int "index" "$IDX"
+					json_close_object
+					IDX=$((IDX + 1))
+				done
+				json_close_array
+				json_dump
+				;;
+
+			add_tracked_device)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var name name
+				json_get_var mac mac
+				json_get_var entity_id entity_id
+				[ -z "$name" ] || [ -z "$mac" ] && { echo '{"error":"name and mac required"}'; exit 0; }
+				[ -z "$entity_id" ] && entity_id=$(echo "$name" | tr ' ' '_' | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_')
+
+				touch /etc/config/laubter
+				uci add laubter tracked_device >/dev/null
+				uci set "laubter.@tracked_device[-1].name=$name"
+				uci set "laubter.@tracked_device[-1].mac=$(echo "$mac" | tr '[:lower:]' '[:upper:]')"
+				uci set "laubter.@tracked_device[-1].entity_id=$entity_id"
+				uci commit laubter
+
+				# Restart service to pick up new device
+				/etc/init.d/laubter-mqtt restart 2>/dev/null
+
+				echo '{"status":"ok"}'
+				;;
+
+			remove_tracked_device)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var mac mac
+				[ -z "$mac" ] && { echo '{"error":"mac required"}'; exit 0; }
+				MAC_UP=$(echo "$mac" | tr '[:lower:]' '[:upper:]')
+
+				IDX=0
+				while true; do
+					M=$(uci -q get "laubter.@tracked_device[$IDX].mac" 2>/dev/null)
+					[ -z "$M" ] && break
+					if [ "$M" = "$MAC_UP" ]; then
+						uci delete "laubter.@tracked_device[$IDX]"
+						uci commit laubter
+						/etc/init.d/laubter-mqtt restart 2>/dev/null
+						echo '{"status":"ok"}'
+						exit 0
+					fi
+					IDX=$((IDX + 1))
+				done
+				echo '{"error":"device not found"}'
+				;;
+
+			get_zone_mappings)
+				json_init
+				json_add_array "zones"
+				IDX=0
+				while true; do
+					AP_MAC=$(uci -q get "laubter.@zone_map[$IDX].ap_mac" 2>/dev/null)
+					[ -z "$AP_MAC" ] && break
+					ZONE=$(uci -q get "laubter.@zone_map[$IDX].zone" 2>/dev/null)
+					ZONE_NAME=$(uci -q get "laubter.@zone_map[$IDX].zone_name" 2>/dev/null)
+					AP_NAME=$(uci -q get "laubter.@zone_map[$IDX].ap_name" 2>/dev/null)
+					json_add_object ""
+					json_add_string "ap_mac" "$AP_MAC"
+					json_add_string "zone" "$ZONE"
+					json_add_string "zone_name" "${ZONE_NAME:-$ZONE}"
+					json_add_string "ap_name" "$AP_NAME"
+					json_close_object
+					IDX=$((IDX + 1))
+				done
+				json_close_array
+				json_dump
+				;;
+
+			set_zone_mapping)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var ap_mac ap_mac
+				json_get_var zone zone
+				json_get_var zone_name zone_name
+				json_get_var ap_name ap_name
+				[ -z "$ap_mac" ] && { echo '{"error":"ap_mac required"}'; exit 0; }
+				AP_UP=$(echo "$ap_mac" | tr '[:lower:]' '[:upper:]')
+
+				touch /etc/config/laubter
+
+				# Find existing or create new
+				IDX=0
+				FOUND=0
+				while true; do
+					M=$(uci -q get "laubter.@zone_map[$IDX].ap_mac" 2>/dev/null)
+					[ -z "$M" ] && break
+					if [ "$M" = "$AP_UP" ]; then
+						if [ -n "$zone" ]; then
+							uci set "laubter.@zone_map[$IDX].zone=$zone"
+							uci set "laubter.@zone_map[$IDX].zone_name=$zone_name"
+							uci set "laubter.@zone_map[$IDX].ap_name=$ap_name"
+						else
+							uci delete "laubter.@zone_map[$IDX]"
+						fi
+						FOUND=1
+						break
+					fi
+					IDX=$((IDX + 1))
+				done
+
+				if [ "$FOUND" = "0" ] && [ -n "$zone" ]; then
+					uci add laubter zone_map >/dev/null
+					uci set "laubter.@zone_map[-1].ap_mac=$AP_UP"
+					uci set "laubter.@zone_map[-1].zone=$zone"
+					uci set "laubter.@zone_map[-1].zone_name=$zone_name"
+					uci set "laubter.@zone_map[-1].ap_name=$ap_name"
+				fi
+
+				uci commit laubter
+				echo '{"status":"ok"}'
+				;;
+
+			get_ha_zones)
+				# Fetch areas from Home Assistant REST API (via template)
+				HA_TOKEN=$(cat /etc/laubter_ha_token 2>/dev/null)
+				BROKER=$(uci -q get laubter.mqtt.broker 2>/dev/null || echo "192.168.50.50")
+				if [ -z "$HA_TOKEN" ]; then
+					echo '{"error":"No HA token configured. Create a Long-Lived Access Token in Home Assistant.","zones":[]}'
+					exit 0
+				fi
+
+				# Use template API to get area_id|area_name pairs
+				RESULT=$(curl -s -X POST \
+					-H "Authorization: Bearer $HA_TOKEN" \
+					-H "Content-Type: application/json" \
+					"http://${BROKER}:8123/api/template" \
+					-d '{"template":"{% for area_id in areas() %}{{area_id}}|{{area_name(area_id)}}\n{% endfor %}"}' 2>/dev/null)
+
+				if [ -n "$RESULT" ] && ! echo "$RESULT" | grep -q "error"; then
+					printf '{"zones":['
+					FIRST=1
+					echo "$RESULT" | while IFS='|' read -r area_id area_name; do
+						[ -z "$area_id" ] && continue
+						# Clean up any trailing whitespace/newlines
+						area_id=$(echo "$area_id" | tr -d '\r\n ')
+						area_name=$(echo "$area_name" | tr -d '\r\n')
+						[ "$FIRST" = "1" ] && FIRST=0 || printf ','
+						printf '{"zone_id":"%s","name":"%s"}' "$area_id" "$area_name"
+					done
+					printf ']}'
+				else
+					echo '{"error":"Failed to fetch areas from HA","zones":[]}'
+				fi
+				;;
+
+			set_ha_token)
+				read -r input
+				TOKEN=$(echo "$input" | jsonfilter -e '@.token' 2>/dev/null)
+				if [ -n "$TOKEN" ]; then
+					printf '%s' "$TOKEN" > /etc/laubter_ha_token
+					chmod 600 /etc/laubter_ha_token
+					echo '{"status":"ok"}'
+				else
+					echo '{"error":"token required"}'
+				fi
+				;;
+
+			publish_discovery)
+				# Force re-publish all discovery messages
+				get_mqtt_config
+				AUTH=""
+				[ -n "$MQTT_USER" ] && AUTH="-u $MQTT_USER"
+				[ -n "$MQTT_PASS" ] && AUTH="$AUTH -P $MQTT_PASS"
+				PFX="$MQTT_PREFIX"
+
+				# Sensor discovery
+				for sensor in cpu memory temperature download upload connections clients vpn_peers dns_queries dns_blocked; do
+					case $sensor in
+						cpu) NAME="CPU Usage"; UNIT="%"; CLASS=""; ICON="mdi:cpu-64-bit" ;;
+						memory) NAME="Memory Usage"; UNIT="%"; CLASS=""; ICON="mdi:memory" ;;
+						temperature) NAME="Temperature"; UNIT="°C"; CLASS="temperature"; ICON="" ;;
+						download) NAME="Download Speed"; UNIT="Mbps"; CLASS=""; ICON="mdi:download" ;;
+						upload) NAME="Upload Speed"; UNIT="Mbps"; CLASS=""; ICON="mdi:upload" ;;
+						connections) NAME="Active Connections"; UNIT=""; CLASS=""; ICON="mdi:lan-connect" ;;
+						clients) NAME="Connected Clients"; UNIT=""; CLASS=""; ICON="mdi:devices" ;;
+						vpn_peers) NAME="VPN Peers"; UNIT=""; CLASS=""; ICON="mdi:vpn" ;;
+						dns_queries) NAME="DNS Queries (24h)"; UNIT=""; CLASS=""; ICON="mdi:dns" ;;
+						dns_blocked) NAME="DNS Blocked (24h)"; UNIT=""; CLASS=""; ICON="mdi:shield-check" ;;
+					esac
+
+					PAYLOAD="{\"name\":\"$NAME\",\"state_topic\":\"${PFX}/sensor/${sensor}\",\"unique_id\":\"laubter_${sensor}\""
+					[ -n "$UNIT" ] && PAYLOAD="$PAYLOAD,\"unit_of_measurement\":\"$UNIT\""
+					[ -n "$CLASS" ] && PAYLOAD="$PAYLOAD,\"device_class\":\"$CLASS\""
+					[ -n "$ICON" ] && PAYLOAD="$PAYLOAD,\"icon\":\"$ICON\""
+					PAYLOAD="$PAYLOAD,\"device\":{\"name\":\"Laubter Router\",\"identifiers\":[\"laubter_router\"],\"manufacturer\":\"OpenWrt\",\"model\":\"NanoPi R5C\"}}"
+
+					mosquitto_pub -h "$MQTT_BROKER" -p "$MQTT_PORT" $AUTH -r \
+						-t "homeassistant/sensor/laubter_${sensor}/config" \
+						-m "$PAYLOAD" 2>/dev/null
+				done
+
+				# Device tracker discovery
+				IDX=0
+				while true; do
+					NAME=$(uci -q get "laubter.@tracked_device[$IDX].name" 2>/dev/null)
+					[ -z "$NAME" ] && break
+					ENTITY=$(uci -q get "laubter.@tracked_device[$IDX].entity_id" 2>/dev/null)
+
+					PAYLOAD="{\"name\":\"$NAME\",\"state_topic\":\"${PFX}/presence/${ENTITY}\",\"unique_id\":\"laubter_${ENTITY}\",\"source_type\":\"router\",\"payload_home\":\"home\",\"payload_not_home\":\"not_home\",\"device\":{\"name\":\"Laubter Router\",\"identifiers\":[\"laubter_router\"],\"manufacturer\":\"OpenWrt\",\"model\":\"NanoPi R5C\"}}"
+
+					mosquitto_pub -h "$MQTT_BROKER" -p "$MQTT_PORT" $AUTH -r \
+						-t "homeassistant/device_tracker/laubter_${ENTITY}/config" \
+						-m "$PAYLOAD" 2>/dev/null
+
+					# Also publish "last area" sensor for this device (friendly name for dashboards)
+					LAST_PAYLOAD="{\"name\":\"$NAME Last Area\",\"state_topic\":\"${PFX}/presence/${ENTITY}/last_area\",\"unique_id\":\"laubter_${ENTITY}_last_area\",\"icon\":\"mdi:map-marker-radius\",\"device\":{\"name\":\"Laubter Router\",\"identifiers\":[\"laubter_router\"],\"manufacturer\":\"OpenWrt\",\"model\":\"NanoPi R5C\"}}"
+
+					mosquitto_pub -h "$MQTT_BROKER" -p "$MQTT_PORT" $AUTH -r \
+						-t "homeassistant/sensor/laubter_${ENTITY}_last_area/config" \
+						-m "$LAST_PAYLOAD" 2>/dev/null
+
+					IDX=$((IDX + 1))
+				done
+
+				echo '{"status":"ok"}'
+				;;
+		esac
+		;;
+esac

@@ -1,0 +1,150 @@
+@import 'tailwindcss';
+@import 'uplot/dist/uPlot.min.css';
+
+/* ============================================
+   Laubter — UniFi-inspired Dark Theme for OpenWrt
+   ============================================ */
+
+@theme {
+	/* Background layers (darkest → lightest) */
+	--color-surface-900: #0e1117;
+	--color-surface-800: #161b22;
+	--color-surface-700: #1c2333;
+	--color-surface-600: #2a3040;
+	--color-surface-500: #303846;
+	--color-surface-400: #3d4654;
+
+	/* Text */
+	--color-text-primary: #e8eaed;
+	--color-text-secondary: #8b949e;
+	--color-text-muted: #6b7280;
+
+	/* Accent — UniFi Blue */
+	--color-accent: #006fff;
+	--color-accent-hover: #0058cc;
+	--color-accent-muted: #1a3a5c;
+	--color-accent-light: #338bff;
+
+	/* Status */
+	--color-success: #22c55e;
+	--color-success-muted: #0f3d1e;
+	--color-warning: #f59e0b;
+	--color-warning-muted: #3d2f0b;
+	--color-danger: #ef4444;
+	--color-danger-muted: #3d1212;
+	--color-info: #06b6d4;
+	--color-info-muted: #0c3040;
+
+	/* Charts */
+	--color-chart-blue: #006fff;
+	--color-chart-cyan: #06b6d4;
+	--color-chart-green: #22c55e;
+	--color-chart-amber: #f59e0b;
+	--color-chart-red: #ef4444;
+	--color-chart-purple: #a354e3;
+
+	/* Spacing (4px grid) */
+	--spacing-xs: 2px;
+	--spacing-sm: 4px;
+	--spacing-md: 8px;
+	--spacing-lg: 16px;
+	--spacing-xl: 24px;
+	--spacing-2xl: 32px;
+	--spacing-3xl: 48px;
+
+	/* Border radius */
+	--radius-sm: 4px;
+	--radius-md: 8px;
+	--radius-lg: 12px;
+	--radius-full: 9999px;
+
+	/* Sidebar */
+	--sidebar-width-collapsed: 64px;
+	--sidebar-width-expanded: 220px;
+
+	/* Font */
+	--font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+	--font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, monospace;
+}
+
+/* Base styles */
+html {
+	font-family: var(--font-sans);
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+body {
+	background-color: var(--color-surface-900);
+	color: var(--color-text-primary);
+	font-size: 14px;
+	line-height: 1.57;
+	margin: 0;
+}
+
+/* Scrollbar styling (dark theme) */
+::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+::-webkit-scrollbar-track {
+	background: var(--color-surface-900);
+}
+::-webkit-scrollbar-thumb {
+	background: var(--color-surface-500);
+	border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb:hover {
+	background: var(--color-text-muted);
+}
+
+/* Monospace elements */
+code, .mono {
+	font-family: var(--font-mono);
+	font-size: 13px;
+}
+
+/* Selection */
+::selection {
+	background-color: var(--color-accent-muted);
+	color: var(--color-text-primary);
+}
+
+/* Utility animations */
+@keyframes pulse-green {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+	50% { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
+}
+.pulse-green { animation: pulse-green 2s ease-in-out infinite; }
+
+@keyframes pulse-red {
+	0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+	50% { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+}
+.pulse-red { animation: pulse-red 2s ease-in-out infinite; }
+
+@keyframes fade-in {
+	from { opacity: 0; transform: translateY(4px); }
+	to { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fade-in 0.3s ease-out; }
+
+/* uPlot overrides for dark theme and full-width */
+.uplot {
+	width: 100% !important;
+}
+.u-wrap {
+	width: 100% !important;
+}
+.u-over, .u-under, .u-wrap canvas {
+	width: 100% !important;
+}
+.u-axis text, .u-axis tspan {
+	fill: #8b949e;
+}
+.u-cursor-x {
+	border-right-color: #6b7280 !important;
+}
+.u-cursor-y {
+	border-bottom-color: #6b7280 !important;
+}

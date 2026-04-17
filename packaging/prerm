@@ -1,0 +1,30 @@
+#!/bin/sh
+
+# Stop and disable metrics service
+if [ -x /etc/init.d/laubter-metrics ]; then
+    /etc/init.d/laubter-metrics stop
+    /etc/init.d/laubter-metrics disable
+    rm -f /etc/init.d/laubter-metrics
+fi
+
+# Stop and disable MQTT service
+if [ -x /etc/init.d/laubter-mqtt ]; then
+    /etc/init.d/laubter-mqtt stop
+    /etc/init.d/laubter-mqtt disable
+    rm -f /etc/init.d/laubter-mqtt
+fi
+
+# Remove uhttpd config
+if uci -q get uhttpd.laubter > /dev/null; then
+    uci delete uhttpd.laubter
+    uci commit uhttpd
+fi
+
+# Clean up temp data
+rm -rf /tmp/laubter
+
+# Restart services
+/etc/init.d/uhttpd restart
+/etc/init.d/rpcd restart
+
+exit 0

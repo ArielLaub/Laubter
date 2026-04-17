@@ -1,0 +1,167 @@
+#!/bin/sh
+# laubter-ddns: Dynamic DNS updater for Laubter
+# Supports DuckDNS (extensible to others)
+# Runs as a cron/procd service, also queryable via ubus
+
+. /usr/share/libubox/jshn.sh
+
+DDNS_CONFIG="/etc/config/laubter"
+LOG_FILE="/tmp/laubter/ddns.log"
+mkdir -p /tmp/laubter
+
+get_config() {
+	DDNS_ENABLED=$(uci -q get laubter.ddns.enabled 2>/dev/null || echo "0")
+	DDNS_PROVIDER=$(uci -q get laubter.ddns.provider 2>/dev/null || echo "duckdns")
+	DDNS_DOMAIN=$(uci -q get laubter.ddns.domain 2>/dev/null || echo "")
+	DDNS_TOKEN=$(cat /etc/laubter_ddns_token 2>/dev/null || echo "")
+	DDNS_INTERVAL=$(uci -q get laubter.ddns.interval 2>/dev/null || echo "300")
+}
+
+case "$1" in
+	list)
+		cat <<-'EOF'
+{
+	"update": {},
+	"get_status": {},
+	"get_config": {},
+	"configure": { "enabled": "str", "provider": "str", "domain": "str", "token": "str", "interval": "str" },
+	"test": {}
+}
+EOF
+		;;
+	call)
+		case "$2" in
+			update)
+				get_config
+				[ "$DDNS_ENABLED" != "1" ] && echo '{"status":"disabled"}' && exit 0
+				[ -z "$DDNS_DOMAIN" ] || [ -z "$DDNS_TOKEN" ] && echo '{"status":"error","message":"Not configured"}' && exit 0
+
+				case "$DDNS_PROVIDER" in
+					duckdns)
+						RESULT=$(curl -sk "https://www.duckdns.org/update?domains=${DDNS_DOMAIN}&token=${DDNS_TOKEN}&verbose=true" 2>/dev/null)
+						FIRST_LINE=$(echo "$RESULT" | head -1)
+						IP=$(echo "$RESULT" | sed -n '2p')
+
+						if [ "$FIRST_LINE" = "OK" ]; then
+							echo "$(date): Updated ${DDNS_DOMAIN}.duckdns.org → ${IP}" >> "$LOG_FILE"
+							# Keep log small
+							tail -100 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+							echo "{\"status\":\"ok\",\"ip\":\"$IP\",\"domain\":\"${DDNS_DOMAIN}.duckdns.org\"}"
+						else
+							echo "$(date): FAILED - $RESULT" >> "$LOG_FILE"
+							echo "{\"status\":\"error\",\"message\":\"DuckDNS returned: $FIRST_LINE\"}"
+						fi
+						;;
+					*)
+						echo '{"status":"error","message":"Unknown provider"}'
+						;;
+				esac
+				;;
+
+			test)
+				get_config
+				[ -z "$DDNS_DOMAIN" ] || [ -z "$DDNS_TOKEN" ] && { echo '{"status":"error","message":"Domain and token required"}'; exit 0; }
+
+				RESULT=$(curl -sk "https://www.duckdns.org/update?domains=${DDNS_DOMAIN}&token=${DDNS_TOKEN}&verbose=true" 2>/dev/null)
+				FIRST_LINE=$(echo "$RESULT" | head -1)
+				IP=$(echo "$RESULT" | sed -n '2p')
+
+				if [ "$FIRST_LINE" = "OK" ]; then
+					echo "{\"status\":\"ok\",\"ip\":\"$IP\",\"domain\":\"${DDNS_DOMAIN}.duckdns.org\"}"
+				else
+					echo "{\"status\":\"error\",\"message\":\"DuckDNS returned: $FIRST_LINE. Check your token.\"}"
+				fi
+				;;
+
+			get_status)
+				get_config
+				json_init
+				json_add_boolean "enabled" "$DDNS_ENABLED"
+				json_add_string "provider" "$DDNS_PROVIDER"
+				if [ -n "$DDNS_DOMAIN" ]; then
+					json_add_string "domain" "${DDNS_DOMAIN}.duckdns.org"
+				else
+					json_add_string "domain" ""
+				fi
+
+				# Last update from log
+				LAST_LOG=$(tail -1 "$LOG_FILE" 2>/dev/null || echo "")
+				json_add_string "last_update" "$LAST_LOG"
+
+				# Current public IP
+				PUB_IP=$(curl -sk https://api.ipify.org 2>/dev/null || echo "")
+				json_add_string "public_ip" "$PUB_IP"
+
+				json_dump
+				;;
+
+			get_config)
+				get_config
+				json_init
+				json_add_string "enabled" "$DDNS_ENABLED"
+				json_add_string "provider" "$DDNS_PROVIDER"
+				json_add_string "domain" "$DDNS_DOMAIN"
+				json_add_boolean "has_token" $([ -n "$DDNS_TOKEN" ] && echo 1 || echo 0)
+				json_add_string "interval" "$DDNS_INTERVAL"
+				json_dump
+				;;
+
+			configure)
+				read -r input
+				json_load "$input" 2>/dev/null
+
+				json_get_var enabled enabled
+				json_get_var provider provider
+				json_get_var domain domain
+				json_get_var token token
+				json_get_var interval interval
+
+				# Ensure config section exists
+				touch "$DDNS_CONFIG"
+				uci -q get laubter.ddns >/dev/null 2>&1 || uci set laubter.ddns=ddns
+
+				[ -n "$enabled" ] && uci set laubter.ddns.enabled="$enabled"
+				[ -n "$provider" ] && uci set laubter.ddns.provider="$provider"
+				[ -n "$domain" ] && uci set laubter.ddns.domain="$domain"
+				[ -n "$interval" ] && uci set laubter.ddns.interval="$interval"
+				uci commit laubter
+
+				# Store token in separate file
+				if [ -n "$token" ]; then
+					printf '%s' "$token" > /etc/laubter_ddns_token
+					chmod 600 /etc/laubter_ddns_token
+				fi
+
+				# Set up or remove the update service
+				if [ "$enabled" = "1" ]; then
+					# Create procd service for periodic updates
+					INT=${interval:-300}
+					cat > /etc/init.d/laubter-ddns <<-INITEOF
+#!/bin/sh /etc/rc.common
+START=99
+STOP=10
+USE_PROCD=1
+start_service() {
+    procd_open_instance
+    procd_set_param command /bin/sh -c "while true; do ubus call laubter-ddns update 2>/dev/null; sleep $INT; done"
+    procd_set_param respawn
+    procd_set_param stdout 0
+    procd_set_param stderr 0
+    procd_close_instance
+}
+INITEOF
+					chmod +x /etc/init.d/laubter-ddns
+					/etc/init.d/laubter-ddns enable 2>/dev/null
+					/etc/init.d/laubter-ddns restart 2>/dev/null
+				else
+					if [ -x /etc/init.d/laubter-ddns ]; then
+						/etc/init.d/laubter-ddns stop 2>/dev/null
+						/etc/init.d/laubter-ddns disable 2>/dev/null
+					fi
+				fi
+
+				echo '{"status":"ok"}'
+				;;
+		esac
+		;;
+esac

@@ -1,0 +1,41 @@
+#!/bin/sh
+# laubter-wireless: Aggregated wireless info for Laubter
+# Replaces luci-rpc.getWirelessDevices
+# Combines iwinfo + channel survey data
+
+. /usr/share/libubox/jshn.sh
+
+case "$1" in
+	list)
+		echo '{ "get_survey": { "device": "str" }, "get_scan": { "device": "str" } }'
+		;;
+	call)
+		case "$2" in
+			get_survey)
+				# Read JSON input for device param
+				read -r input
+				json_load "$input"
+				json_get_var device device
+
+				# Return channel survey data from iwinfo
+				if [ -n "$device" ] && command -v iwinfo >/dev/null 2>&1; then
+					iwinfo "$device" survey 2>/dev/null || echo '[]'
+				else
+					echo '[]'
+				fi
+				;;
+
+			get_scan)
+				read -r input
+				json_load "$input"
+				json_get_var device device
+
+				if [ -n "$device" ] && command -v iwinfo >/dev/null 2>&1; then
+					iwinfo "$device" scan 2>/dev/null || echo '[]'
+				else
+					echo '[]'
+				fi
+				;;
+		esac
+		;;
+esac

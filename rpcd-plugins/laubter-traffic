@@ -1,0 +1,19 @@
+#!/bin/sh
+# laubter-traffic: Per-client bandwidth data from nlbwmon
+
+case "$1" in
+	list)
+		echo '{ "get_clients": {} }'
+		;;
+	call)
+		case "$2" in
+			get_clients)
+				if command -v nlbw >/dev/null 2>&1; then
+					nlbw -c json -g mac,ip 2>/dev/null || echo '{"columns":[],"data":[]}'
+				else
+					echo '{"columns":[],"data":[],"error":"nlbwmon not installed"}'
+				fi
+				;;
+		esac
+		;;
+esac

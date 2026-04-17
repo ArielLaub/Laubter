@@ -1,0 +1,95 @@
+#!/bin/sh
+# laubter-adguard: AdGuard Home integration for Laubter
+# Proxies AdGuard Home's REST API
+
+AGH_URL="http://127.0.0.1:3080"
+
+case "$1" in
+	list)
+		echo '{ "get_status": {}, "get_stats": {}, "get_querylog": { "limit": 50 }, "get_filtering": {}, "toggle_protection": { "enabled": "bool" }, "toggle_filtering": { "enabled": "bool" }, "toggle_safebrowsing": { "enabled": "bool" }, "toggle_parental": { "enabled": "bool" }, "add_filter": { "url": "str", "name": "str" }, "remove_filter": { "url": "str" }, "add_user_rule": { "rule": "str" }, "remove_user_rule": { "rule": "str" }, "get_querylog_config": {}, "set_querylog_config": { "enabled": "bool", "interval": "int", "anonymize_client_ip": "bool" }, "get_clients": {} }'
+		;;
+	call)
+		case "$2" in
+			get_status)
+				curl -s "${AGH_URL}/control/status" 2>/dev/null || echo '{"error":"AdGuard Home not running"}'
+				;;
+			get_stats)
+				curl -s "${AGH_URL}/control/stats" 2>/dev/null || echo '{"error":"AdGuard Home not running"}'
+				;;
+			get_querylog)
+				read -r input 2>/dev/null
+				LIMIT=$(echo "$input" | jsonfilter -e '@.limit' 2>/dev/null || echo 50)
+				curl -s "${AGH_URL}/control/querylog?limit=${LIMIT}&response_status=all" 2>/dev/null || echo '{"data":[]}'
+				;;
+			get_filtering)
+				curl -s "${AGH_URL}/control/filtering/status" 2>/dev/null || echo '{"filters":[]}'
+				;;
+			toggle_protection)
+				read -r input
+				ENABLED=$(echo "$input" | jsonfilter -e '@.enabled' 2>/dev/null || echo true)
+				curl -s -X POST "${AGH_URL}/control/dns_config" \
+					-H "Content-Type: application/json" \
+					-d "{\"protection_enabled\":${ENABLED}}" 2>/dev/null
+				echo '{"status":"ok"}'
+				;;
+			toggle_filtering)
+				read -r input
+				ENABLED=$(echo "$input" | jsonfilter -e '@.enabled' 2>/dev/null || echo true)
+				curl -s -X POST "${AGH_URL}/control/filtering/config" \
+					-H "Content-Type: application/json" \
+					-d "{\"enabled\":${ENABLED},\"interval\":24}" 2>/dev/null
+				echo '{"status":"ok"}'
+				;;
+			toggle_safebrowsing)
+				read -r input
+				ENABLED=$(echo "$input" | jsonfilter -e '@.enabled' 2>/dev/null || echo false)
+				curl -s -X POST "${AGH_URL}/control/safebrowsing/enable" 2>/dev/null
+				echo '{"status":"ok"}'
+				;;
+			toggle_parental)
+				read -r input
+				ENABLED=$(echo "$input" | jsonfilter -e '@.enabled' 2>/dev/null || echo false)
+				curl -s -X POST "${AGH_URL}/control/parental/enable" 2>/dev/null
+				echo '{"status":"ok"}'
+				;;
+			add_filter)
+				read -r input
+				curl -s -X POST "${AGH_URL}/control/filtering/add_url" \
+					-H "Content-Type: application/json" \
+					-d "$input" 2>/dev/null
+				echo '{"status":"ok"}'
+				;;
+			remove_filter)
+				read -r input
+				URL=$(echo "$input" | jsonfilter -e '@.url' 2>/dev/null)
+				curl -s -X POST "${AGH_URL}/control/filtering/remove_url" \
+					-H "Content-Type: application/json" \
+					-d "{\"url\":\"${URL}\",\"whitelist\":false}" 2>/dev/null
+				echo '{"status":"ok"}'
+				;;
+			add_user_rule)
+				read -r input
+				RULE=$(echo "$input" | jsonfilter -e '@.rule' 2>/dev/null)
+				# Get current rules, append, set
+				RULES=$(curl -s "${AGH_URL}/control/filtering/status" 2>/dev/null | jsonfilter -e '@.user_rules[*]' 2>/dev/null)
+				curl -s -X POST "${AGH_URL}/control/filtering/set_rules" \
+					-H "Content-Type: application/json" \
+					-d "{\"rules\":[${RULES:+$(echo "$RULES" | sed 's/^/"/;s/$/"/' | tr '\n' ',' | sed 's/,$//')},]\"${RULE}\"}" 2>/dev/null
+				echo '{"status":"ok"}'
+				;;
+			get_querylog_config)
+				curl -s "${AGH_URL}/control/querylog/config" 2>/dev/null || echo '{"enabled":true,"interval":86400000}'
+				;;
+			set_querylog_config)
+				read -r input
+				curl -s -X PUT "${AGH_URL}/control/querylog/config/update" \
+					-H "Content-Type: application/json" \
+					-d "$input" 2>/dev/null
+				echo '{"status":"ok"}'
+				;;
+			get_clients)
+				curl -s "${AGH_URL}/control/clients" 2>/dev/null || echo '{"clients":[]}'
+				;;
+		esac
+		;;
+esac

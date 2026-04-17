@@ -1,0 +1,192 @@
+#!/bin/sh
+# laubter-mqtt-pub: Background MQTT publisher for Home Assistant integration
+# Publishes presence detection and sensor data at configurable intervals
+# Run as a procd service
+
+. /usr/share/libubox/jshn.sh
+
+PASS_FILE="/etc/laubter_mqtt_secret"
+
+get_config() {
+	MQTT_BROKER=$(uci -q get laubter.mqtt.broker 2>/dev/null || echo "192.168.50.50")
+	MQTT_PORT=$(uci -q get laubter.mqtt.port 2>/dev/null || echo "1883")
+	MQTT_USER=$(uci -q get laubter.mqtt.username 2>/dev/null || echo "")
+	MQTT_PASS=""
+	[ -f "$PASS_FILE" ] && MQTT_PASS=$(cat "$PASS_FILE" 2>/dev/null)
+	MQTT_PREFIX=$(uci -q get laubter.mqtt.prefix 2>/dev/null || echo "laubter")
+	MQTT_INTERVAL=$(uci -q get laubter.mqtt.interval 2>/dev/null || echo "10")
+}
+
+pub() {
+	# Helper: publish a message
+	local topic="$1"
+	local msg="$2"
+	local retain="$3"
+	local AUTH=""
+	[ -n "$MQTT_USER" ] && AUTH="-u $MQTT_USER"
+	[ -n "$MQTT_PASS" ] && AUTH="$AUTH -P $MQTT_PASS"
+	local R=""
+	[ "$retain" = "1" ] && R="-r"
+	mosquitto_pub -h "$MQTT_BROKER" -p "$MQTT_PORT" $AUTH $R -t "$topic" -m "$msg" 2>/dev/null
+}
+
+# Build zone lookups: AP_MAC → zone_id and AP_MAC → friendly name
+build_zone_map() {
+	ZONE_MAP=""
+	ZONE_NAME_MAP=""
+	IDX=0
+	while true; do
+		AP_MAC=$(uci -q get "laubter.@zone_map[$IDX].ap_mac" 2>/dev/null)
+		[ -z "$AP_MAC" ] && break
+		ZONE=$(uci -q get "laubter.@zone_map[$IDX].zone" 2>/dev/null)
+		ZONE_NAME=$(uci -q get "laubter.@zone_map[$IDX].zone_name" 2>/dev/null)
+		[ -z "$ZONE_NAME" ] && ZONE_NAME="$ZONE"
+		ZONE_MAP="$ZONE_MAP|$AP_MAC=$ZONE"
+		ZONE_NAME_MAP="$ZONE_NAME_MAP|$AP_MAC=$ZONE_NAME"
+		IDX=$((IDX + 1))
+	done
+}
+
+# Look up zone id for an AP MAC
+get_zone_for_ap() {
+	local ap_mac="$1"
+	local AP_UP=$(echo "$ap_mac" | tr '[:lower:]' '[:upper:]')
+	echo "$ZONE_MAP" | tr '|' '\n' | while read entry; do
+		KEY=$(echo "$entry" | cut -d= -f1)
+		VAL=$(echo "$entry" | cut -d= -f2)
+		if [ "$KEY" = "$AP_UP" ]; then
+			echo "$VAL"
+			return
+		fi
+	done
+}
+
+# Look up friendly zone name for an AP MAC
+get_zone_name_for_ap() {
+	local ap_mac="$1"
+	local AP_UP=$(echo "$ap_mac" | tr '[:lower:]' '[:upper:]')
+	echo "$ZONE_NAME_MAP" | tr '|' '\n' | while read entry; do
+		KEY=$(echo "$entry" | cut -d= -f1)
+		VAL=$(echo "$entry" | cut -d= -f2)
+		if [ "$KEY" = "$AP_UP" ]; then
+			echo "$VAL"
+			return
+		fi
+	done
+}
+
+publish_presence() {
+	# Get mesh client data
+	local allclients=$(ubus call laubter-mesh get_clients 2>/dev/null)
+	[ -z "$allclients" ] && return
+
+	# For each tracked device
+	IDX=0
+	while true; do
+		NAME=$(uci -q get "laubter.@tracked_device[$IDX].name" 2>/dev/null)
+		[ -z "$NAME" ] && break
+		MAC=$(uci -q get "laubter.@tracked_device[$IDX].mac" 2>/dev/null)
+		ENTITY=$(uci -q get "laubter.@tracked_device[$IDX].entity_id" 2>/dev/null)
+
+		# Find this MAC in the mesh client list
+		MAC_UPPER=$(echo "$MAC" | tr '[:lower:]' '[:upper:]')
+		CLIENT_DATA=$(echo "$allclients" | jsonfilter -e "@.get_clientlist[\"$MAC_UPPER\"]" 2>/dev/null)
+
+		LOCATION="not_home"
+		FRIENDLY_NAME=""
+		if [ -n "$CLIENT_DATA" ]; then
+			IS_ONLINE=$(echo "$CLIENT_DATA" | jsonfilter -e "@.isOnline" 2>/dev/null)
+			PAP_MAC=$(echo "$CLIENT_DATA" | jsonfilter -e "@.amesh_papMac" 2>/dev/null)
+
+			if [ "$IS_ONLINE" = "1" ]; then
+				LOCATION="home"
+				if [ -n "$PAP_MAC" ]; then
+					ZONE=$(get_zone_for_ap "$PAP_MAC")
+					if [ -n "$ZONE" ]; then
+						LOCATION="$ZONE"
+						FRIENDLY_NAME=$(get_zone_name_for_ap "$PAP_MAC")
+					fi
+				fi
+			fi
+		else
+			# Not found in mesh — check DHCP leases as fallback
+			LEASE=$(grep -i "$MAC" /tmp/dhcp.leases 2>/dev/null)
+			[ -n "$LEASE" ] && LOCATION="home"
+		fi
+
+		# Publish current state (area id — stable for automations)
+		pub "${MQTT_PREFIX}/presence/${ENTITY}" "$LOCATION"
+
+		# Publish "last seen area" with friendly name for dashboard display
+		# Uses retain flag so it persists after device disconnects
+		if [ "$LOCATION" != "not_home" ] && [ "$LOCATION" != "home" ]; then
+			[ -z "$FRIENDLY_NAME" ] && FRIENDLY_NAME="$LOCATION"
+			pub "${MQTT_PREFIX}/presence/${ENTITY}/last_area" "$FRIENDLY_NAME" 1
+		fi
+
+		IDX=$((IDX + 1))
+	done
+}
+
+publish_sensors() {
+	# Get current stats
+	local stats=$(ubus call laubter-stats get_current 2>/dev/null)
+	if [ -n "$stats" ]; then
+		CPU=$(echo "$stats" | jsonfilter -e "@.cpu_pct" 2>/dev/null || echo 0)
+		MEM_KB=$(echo "$stats" | jsonfilter -e "@.mem_used_kb" 2>/dev/null || echo 0)
+		MEM_MB=$((MEM_KB / 1024))
+		MEM_TOTAL=$(awk '/^MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 1)
+		MEM_AVAIL=$(awk '/^MemAvailable/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
+		MEM_PCT=$(( (MEM_TOTAL - MEM_AVAIL) * 100 / MEM_TOTAL ))
+		TEMP_MC=$(echo "$stats" | jsonfilter -e "@.temp_mc" 2>/dev/null || echo 0)
+		TEMP=$(awk "BEGIN { printf \"%.1f\", $TEMP_MC / 1000 }")
+		RX=$(echo "$stats" | jsonfilter -e "@.rx_rate" 2>/dev/null || echo 0)
+		TX=$(echo "$stats" | jsonfilter -e "@.tx_rate" 2>/dev/null || echo 0)
+		RX_MBPS=$(awk "BEGIN { printf \"%.1f\", $RX * 8 / 1000000 }")
+		TX_MBPS=$(awk "BEGIN { printf \"%.1f\", $TX * 8 / 1000000 }")
+		CONNS=$(echo "$stats" | jsonfilter -e "@.conns" 2>/dev/null || echo 0)
+
+		pub "${MQTT_PREFIX}/sensor/cpu" "$CPU"
+		pub "${MQTT_PREFIX}/sensor/memory" "$MEM_PCT"
+		pub "${MQTT_PREFIX}/sensor/temperature" "$TEMP"
+		pub "${MQTT_PREFIX}/sensor/download" "$RX_MBPS"
+		pub "${MQTT_PREFIX}/sensor/upload" "$TX_MBPS"
+		pub "${MQTT_PREFIX}/sensor/connections" "$CONNS"
+	fi
+
+	# Client count from DHCP
+	CLIENTS=$(wc -l < /tmp/dhcp.leases 2>/dev/null || echo 0)
+	pub "${MQTT_PREFIX}/sensor/clients" "$CLIENTS"
+
+	# VPN peers — count configured and online (handshake within 3 minutes)
+	VPN_TOTAL=$(wg show wg0 2>/dev/null | grep -c "peer:" || echo 0)
+	VPN_ONLINE=0
+	NOW=$(date +%s)
+	for HS in $(wg show wg0 dump 2>/dev/null | tail -n +2 | awk -F'\t' '{print $5}'); do
+		[ "$HS" -gt 0 ] 2>/dev/null && [ $((NOW - HS)) -lt 180 ] && VPN_ONLINE=$((VPN_ONLINE + 1))
+	done
+	pub "${MQTT_PREFIX}/sensor/vpn_peers" "${VPN_ONLINE}/${VPN_TOTAL}"
+
+	# AdGuard stats
+	AGH_STATS=$(curl -s http://127.0.0.1:3080/control/stats 2>/dev/null)
+	if [ -n "$AGH_STATS" ]; then
+		DNS_Q=$(echo "$AGH_STATS" | jsonfilter -e "@.num_dns_queries" 2>/dev/null || echo 0)
+		DNS_B=$(echo "$AGH_STATS" | jsonfilter -e "@.num_blocked_filtering" 2>/dev/null || echo 0)
+		pub "${MQTT_PREFIX}/sensor/dns_queries" "$DNS_Q"
+		pub "${MQTT_PREFIX}/sensor/dns_blocked" "$DNS_B"
+	fi
+}
+
+# === Main loop ===
+get_config
+build_zone_map
+
+# Publish discovery on startup
+ubus call laubter-mqtt publish_discovery 2>/dev/null
+
+# Main publish loop
+while true; do
+	publish_presence
+	publish_sensors
+	sleep "$MQTT_INTERVAL"
+done

@@ -1,0 +1,70 @@
+#!/bin/sh
+# laubter-network: Aggregated network device info for Laubter
+# Replaces luci-rpc.getNetworkDevices
+# Returns merged /sys/class/net stats + board.json port layout
+
+. /usr/share/libubox/jshn.sh
+
+case "$1" in
+	list)
+		echo '{ "get_devices": {}, "get_board": {} }'
+		;;
+	call)
+		case "$2" in
+			get_devices)
+				json_init
+				json_add_object "devices"
+
+				for dev in /sys/class/net/*; do
+					[ -d "$dev" ] || continue
+					devname=$(basename "$dev")
+
+					# Skip internal devices
+					case "$devname" in
+						lo|ifb*|mon.*|wmaster*) continue ;;
+					esac
+
+					json_add_object "$devname"
+
+					# Basic info
+					json_add_string "type" "$(cat "$dev/type" 2>/dev/null)"
+					json_add_string "macaddr" "$(cat "$dev/address" 2>/dev/null)"
+					json_add_int "mtu" "$(cat "$dev/mtu" 2>/dev/null || echo 0)"
+					json_add_string "operstate" "$(cat "$dev/operstate" 2>/dev/null)"
+
+					# Speed/duplex (for ethernet)
+					[ -f "$dev/speed" ] && json_add_string "speed" "$(cat "$dev/speed" 2>/dev/null)"
+					[ -f "$dev/duplex" ] && json_add_string "duplex" "$(cat "$dev/duplex" 2>/dev/null)"
+
+					# DSA detection
+					[ -f "$dev/phys_switch_id" ] && json_add_string "switch_id" "$(cat "$dev/phys_switch_id" 2>/dev/null)"
+					[ -L "$dev/device/driver" ] && {
+						driver=$(basename "$(readlink "$dev/device/driver")")
+						json_add_string "driver" "$driver"
+					}
+
+					# Statistics
+					json_add_object "statistics"
+					for stat in rx_bytes tx_bytes rx_packets tx_packets rx_errors tx_errors rx_dropped tx_dropped; do
+						json_add_int "$stat" "$(cat "$dev/statistics/$stat" 2>/dev/null || echo 0)"
+					done
+					json_close_object
+
+					json_close_object
+				done
+
+				json_close_object
+				json_dump
+				;;
+
+			get_board)
+				# Return /etc/board.json directly
+				if [ -f /etc/board.json ]; then
+					cat /etc/board.json
+				else
+					echo '{}'
+				fi
+				;;
+		esac
+		;;
+esac

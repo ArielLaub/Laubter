@@ -1,0 +1,58 @@
+#!/bin/sh
+# laubter-hosts: Aggregated host/client info for Laubter
+# Replaces luci-rpc.getHostHints
+# Merges: DHCP leases + ARP table + wireless assoclist
+
+. /usr/share/libubox/jshn.sh
+
+case "$1" in
+	list)
+		echo '{ "get_hints": {} }'
+		;;
+	call)
+		case "$2" in
+			get_hints)
+				json_init
+				json_add_object "hosts"
+
+				# Parse DHCP leases
+				if [ -f /tmp/dhcp.leases ]; then
+					while read -r expire mac ip hostname _; do
+						[ -z "$mac" ] && continue
+						mac_lower=$(echo "$mac" | tr 'A-F' 'a-f')
+
+						json_add_object "$mac_lower"
+						json_add_string "mac" "$mac_lower"
+						json_add_string "ipaddr" "$ip"
+						[ -n "$hostname" ] && [ "$hostname" != "*" ] && json_add_string "hostname" "$hostname"
+						json_add_string "source" "dhcp"
+						json_add_int "expire" "$expire"
+						json_close_object
+					done < /tmp/dhcp.leases
+				fi
+
+				# Merge ARP table (adds entries not in DHCP)
+				if [ -f /proc/net/arp ]; then
+					tail -n +2 /proc/net/arp | while read -r ip _ _ mac _ dev; do
+						[ "$mac" = "00:00:00:00:00:00" ] && continue
+						mac_lower=$(echo "$mac" | tr 'A-F' 'a-f')
+
+						# Only add if not already from DHCP
+						json_select "hosts" 2>/dev/null
+						if ! json_is_a "$mac_lower" object 2>/dev/null; then
+							json_add_object "$mac_lower"
+							json_add_string "mac" "$mac_lower"
+							json_add_string "ipaddr" "$ip"
+							json_add_string "source" "arp"
+							json_add_string "device" "$dev"
+							json_close_object
+						fi
+					done
+				fi
+
+				json_close_object
+				json_dump
+				;;
+		esac
+		;;
+esac

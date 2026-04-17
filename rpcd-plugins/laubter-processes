@@ -1,0 +1,55 @@
+#!/bin/sh
+# laubter-processes: Process monitor for Laubter
+
+case "$1" in
+	list)
+		echo '{ "get_all": {}, "kill": { "pid": "int", "signal": "int" } }'
+		;;
+	call)
+		case "$2" in
+			get_all)
+				TOP=$(top -b -n1 2>/dev/null)
+
+				MEM_USED=$(echo "$TOP" | head -1 | awk '{gsub(/K/,"",$2); print $2}')
+				MEM_FREE=$(echo "$TOP" | head -1 | awk '{gsub(/K/,"",$4); print $4}')
+				CPU_USR=$(echo "$TOP" | sed -n '2p' | sed 's/.*: *//;s/%.*//')
+				CPU_IDLE=$(echo "$TOP" | sed -n '2p' | sed 's/.*nic *//;s/% idle.*//')
+
+				# Build process JSON using awk on top output
+				PROCS=$(echo "$TOP" | awk 'NR>4 && $1+0>0 {
+					pid=$1; ppid=$2; user=$3; stat=$4; mem=$6; cpu=$7
+					# VSZ can be like "1565m" or "4104" — convert m suffix to KB
+					vsz_raw=$5
+					if(index(vsz_raw,"m")>0) {
+						gsub(/m/,"",vsz_raw)
+						vsz=vsz_raw*1024
+					} else {
+						vsz=vsz_raw+0
+					}
+					cmd=""
+					for(i=8;i<=NF;i++) cmd=cmd (i>8?" ":"") $i
+					gsub(/"/, "", cmd)
+					cmd=substr(cmd, 1, 200)
+					if(n++) printf ","
+					printf "{\"pid\":%d,\"ppid\":%d,\"user\":\"%s\",\"stat\":\"%s\",\"vsz_kb\":%d,\"rss_kb\":%d,\"cpu\":\"%s\",\"mem\":\"%s\",\"cmd\":\"%s\"}", pid, ppid, user, stat, vsz, vsz, cpu, mem, cmd
+				}')
+
+				printf '{"mem_used_kb":%s,"mem_free_kb":%s,"cpu_usr":%s,"cpu_idle":%s,"processes":[%s]}\n' \
+					"${MEM_USED:-0}" "${MEM_FREE:-0}" "${CPU_USR:-0}" "${CPU_IDLE:-0}" "$PROCS"
+				;;
+
+			kill)
+				read -r input
+				PID=$(echo "$input" | jsonfilter -e '@.pid' 2>/dev/null)
+				SIG=$(echo "$input" | jsonfilter -e '@.signal' 2>/dev/null)
+				[ -z "$SIG" ] && SIG=15
+				[ -z "$PID" ] && { echo '{"error":"pid required"}'; exit 0; }
+				if kill -"$SIG" "$PID" 2>/dev/null; then
+					echo '{"status":"ok"}'
+				else
+					echo '{"error":"Failed to send signal"}'
+				fi
+				;;
+		esac
+		;;
+esac
