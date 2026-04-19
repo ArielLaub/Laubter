@@ -12,7 +12,7 @@ CACHE_TTL=5
 mkdir -p "$DATA_DIR"
 
 get_config() {
-	MESH_PROVIDER=$(uci -q get laubter.mesh.provider 2>/dev/null || echo "asus")
+	MESH_PROVIDER=$(uci -q get laubter.mesh.provider 2>/dev/null || echo "openwrt")
 	MESH_HOST=$(uci -q get laubter.mesh.host 2>/dev/null || echo "192.168.50.2")
 	MESH_PORT=$(uci -q get laubter.mesh.port 2>/dev/null || echo "8443")
 	MESH_PROTO=$(uci -q get laubter.mesh.proto 2>/dev/null || echo "https")
