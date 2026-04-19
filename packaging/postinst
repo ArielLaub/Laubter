@@ -63,6 +63,11 @@ if [ "$(uci -q get laubter.mqtt.enabled)" = "1" ]; then
     /etc/init.d/laubter-mqtt start
 fi
 
+# === Default features (install if not already present) ===
+for pkg in nlbwmon speedtest-go; do
+    apk info -e "$pkg" >/dev/null 2>&1 || apk add "$pkg" 2>/dev/null
+done
+
 # === Make rpcd plugins executable ===
 chmod +x /usr/libexec/rpcd/laubter-* 2>/dev/null
 
