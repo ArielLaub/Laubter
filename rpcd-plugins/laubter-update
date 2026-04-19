@@ -1,0 +1,184 @@
+#!/bin/sh
+# laubter-update: Self-update via GitHub releases + optional feature management
+
+VERSION_FILE="/usr/share/laubter/version"
+REPO="ArielLaub/Laubter"
+GITHUB_API="https://api.github.com/repos/$REPO/releases/latest"
+DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/laubter.apk"
+TMP_APK="/tmp/laubter-update.apk"
+
+mkdir -p /tmp/laubter
+
+# Feature definitions: id|label|description|packages (space-separated)
+FEATURES="
+vpn|WireGuard VPN|VPN server with QR-code peer provisioning|wireguard-tools qrencode
+speedtest|Speed Test|Measure WAN throughput with live gauges|speedtest-go
+adguard|AdGuard Home|DNS-level ad blocking and query log|adguardhome
+nlbwmon|Traffic Monitor|Per-client bandwidth monitoring|nlbwmon
+mqtt|Home Assistant|MQTT integration with presence detection|mosquitto-client
+"
+
+get_installed_version() {
+	if [ -f "$VERSION_FILE" ]; then
+		cat "$VERSION_FILE"
+	else
+		echo "unknown"
+	fi
+}
+
+is_pkg_installed() {
+	apk info -e "$1" >/dev/null 2>&1
+}
+
+case "$1" in
+	list)
+		echo '{ "get_version": {}, "check_update": {}, "do_update": {}, "get_features": {}, "enable_feature": { "id": "str" }, "disable_feature": { "id": "str" } }'
+		;;
+	call)
+		case "$2" in
+			get_version)
+				VER=$(get_installed_version)
+				echo "{\"version\":\"$VER\"}"
+				;;
+
+			check_update)
+				VER=$(get_installed_version)
+
+				RELEASE_JSON=$(curl -sf --connect-timeout 10 --max-time 20 \
+					-H "Accept: application/vnd.github.v3+json" \
+					"$GITHUB_API" 2>/dev/null)
+
+				if [ -z "$RELEASE_JSON" ]; then
+					echo "{\"installed\":\"$VER\",\"latest\":\"\",\"update_available\":false,\"error\":\"Failed to check GitHub releases\"}"
+					exit 0
+				fi
+
+				LATEST=$(echo "$RELEASE_JSON" | jsonfilter -e '@.tag_name' 2>/dev/null)
+				LATEST_VER=$(echo "$LATEST" | sed 's/^v//')
+				BODY=$(echo "$RELEASE_JSON" | jsonfilter -e '@.body' 2>/dev/null | head -c 2000)
+				PUBLISHED=$(echo "$RELEASE_JSON" | jsonfilter -e '@.published_at' 2>/dev/null)
+
+				if [ -z "$LATEST_VER" ]; then
+					echo "{\"installed\":\"$VER\",\"latest\":\"\",\"update_available\":false,\"error\":\"Could not parse release info\"}"
+					exit 0
+				fi
+
+				if [ "$LATEST_VER" = "$VER" ]; then
+					UPDATE=false
+				else
+					UPDATE=true
+				fi
+
+				BODY_ESC=$(printf '%s' "$BODY" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g' | tr '\n' ' ')
+
+				echo "{\"installed\":\"$VER\",\"latest\":\"$LATEST_VER\",\"update_available\":$UPDATE,\"release_notes\":\"$BODY_ESC\",\"published_at\":\"$PUBLISHED\"}"
+				;;
+
+			do_update)
+				curl -sfL --connect-timeout 15 --max-time 120 \
+					-o "$TMP_APK" "$DOWNLOAD_URL" 2>/dev/null
+
+				if [ ! -s "$TMP_APK" ]; then
+					echo "{\"success\":false,\"error\":\"Download failed\"}"
+					rm -f "$TMP_APK"
+					exit 0
+				fi
+
+				OUTPUT=$(apk add --allow-untrusted "$TMP_APK" 2>&1)
+				RC=$?
+				rm -f "$TMP_APK"
+
+				if [ "$RC" -eq 0 ]; then
+					NEW_VER=$(get_installed_version)
+					echo "{\"success\":true,\"version\":\"$NEW_VER\"}"
+					/etc/init.d/rpcd restart >/dev/null 2>&1 &
+				else
+					OUTPUT_ESC=$(printf '%s' "$OUTPUT" | sed 's/"/\\"/g' | tr '\n' ' ')
+					echo "{\"success\":false,\"error\":\"$OUTPUT_ESC\"}"
+				fi
+				;;
+
+			get_features)
+				printf '{"features":['
+				FIRST=1
+				echo "$FEATURES" | while IFS='|' read -r id label desc pkgs; do
+					[ -z "$id" ] && continue
+					# Check if all packages for this feature are installed
+					ENABLED=true
+					for pkg in $pkgs; do
+						if ! is_pkg_installed "$pkg"; then
+							ENABLED=false
+							break
+						fi
+					done
+					[ "$FIRST" = "1" ] && FIRST=0 || printf ','
+					printf '{"id":"%s","label":"%s","description":"%s","packages":"%s","enabled":%s}' \
+						"$id" "$label" "$desc" "$pkgs" "$ENABLED"
+				done
+				printf ']}'
+				;;
+
+			enable_feature)
+				# Read the feature id from JSON input
+				read -r INPUT
+				FEAT_ID=$(echo "$INPUT" | jsonfilter -e '@.id' 2>/dev/null)
+
+				if [ -z "$FEAT_ID" ]; then
+					echo '{"success":false,"error":"Missing feature id"}'
+					exit 0
+				fi
+
+				# Find the feature's packages
+				PKGS=""
+				echo "$FEATURES" | while IFS='|' read -r id label desc pkgs; do
+					[ "$id" = "$FEAT_ID" ] && echo "$pkgs"
+				done | read -r PKGS
+
+				if [ -z "$PKGS" ]; then
+					echo "{\"success\":false,\"error\":\"Unknown feature: $FEAT_ID\"}"
+					exit 0
+				fi
+
+				OUTPUT=$(apk add $PKGS 2>&1)
+				RC=$?
+
+				if [ "$RC" -eq 0 ]; then
+					echo "{\"success\":true,\"feature\":\"$FEAT_ID\"}"
+				else
+					OUTPUT_ESC=$(printf '%s' "$OUTPUT" | sed 's/"/\\"/g' | tr '\n' ' ')
+					echo "{\"success\":false,\"error\":\"$OUTPUT_ESC\"}"
+				fi
+				;;
+
+			disable_feature)
+				read -r INPUT
+				FEAT_ID=$(echo "$INPUT" | jsonfilter -e '@.id' 2>/dev/null)
+
+				if [ -z "$FEAT_ID" ]; then
+					echo '{"success":false,"error":"Missing feature id"}'
+					exit 0
+				fi
+
+				PKGS=""
+				echo "$FEATURES" | while IFS='|' read -r id label desc pkgs; do
+					[ "$id" = "$FEAT_ID" ] && echo "$pkgs"
+				done | read -r PKGS
+
+				if [ -z "$PKGS" ]; then
+					echo "{\"success\":false,\"error\":\"Unknown feature: $FEAT_ID\"}"
+					exit 0
+				fi
+
+				OUTPUT=$(apk del $PKGS 2>&1)
+				RC=$?
+
+				if [ "$RC" -eq 0 ]; then
+					echo "{\"success\":true,\"feature\":\"$FEAT_ID\"}"
+				else
+					OUTPUT_ESC=$(printf '%s' "$OUTPUT" | sed 's/"/\\"/g' | tr '\n' ' ')
+					echo "{\"success\":false,\"error\":\"$OUTPUT_ESC\"}"
+				fi
+				;;
+		esac
+		;;
+esac

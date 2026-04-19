@@ -10,6 +10,17 @@
 	let showRebootConfirm = $state(false);
 	let rebooting = $state(false);
 
+	// Update state
+	let currentVersion = $state('');
+	let latestVersion = $state('');
+	let updateAvailable = $state(false);
+	let releaseNotes = $state('');
+	let publishedAt = $state('');
+	let checking = $state(false);
+	let updating = $state(false);
+	let updateError = $state('');
+	let showUpdateConfirm = $state(false);
+
 	// Form state
 	let hostname = $state('');
 	let description = $state('');
@@ -49,7 +60,68 @@
 		} finally {
 			loading = false;
 		}
+
+		// Fetch installed version (non-blocking)
+		try {
+			const ver = await call<{ version: string }>('laubter-update', 'get_version', {});
+			currentVersion = ver.version ?? 'unknown';
+		} catch { /* plugin may not be installed yet */ }
 	});
+
+	async function handleCheckUpdate() {
+		checking = true;
+		updateError = '';
+		try {
+			const res = await call<{
+				installed: string;
+				latest: string;
+				update_available: boolean;
+				release_notes?: string;
+				published_at?: string;
+				error?: string;
+			}>('laubter-update', 'check_update', {});
+
+			if (res.error) {
+				updateError = res.error;
+			} else {
+				currentVersion = res.installed;
+				latestVersion = res.latest;
+				updateAvailable = res.update_available;
+				releaseNotes = res.release_notes ?? '';
+				publishedAt = res.published_at ?? '';
+			}
+		} catch (e) {
+			updateError = e instanceof Error ? e.message : 'Failed to check for updates';
+		} finally {
+			checking = false;
+		}
+	}
+
+	async function handleDoUpdate() {
+		updating = true;
+		updateError = '';
+		showUpdateConfirm = false;
+		try {
+			const res = await call<{
+				success: boolean;
+				version?: string;
+				error?: string;
+			}>('laubter-update', 'do_update', {});
+
+			if (res.success) {
+				currentVersion = res.version ?? latestVersion;
+				updateAvailable = false;
+				message = `Updated to v${currentVersion}. Reload the page to use the new version.`;
+				messageType = 'success';
+			} else {
+				updateError = res.error ?? 'Update failed';
+			}
+		} catch (e) {
+			updateError = e instanceof Error ? e.message : 'Update failed';
+		} finally {
+			updating = false;
+		}
+	}
 
 	function loadFormFromUci() {
 		const sys = uci.getFirst('system', 'system') as Record<string, unknown> | undefined;
@@ -234,6 +306,66 @@
 		</div>
 
 		<div class="form-card">
+			<h2 class="card-title">Software Update</h2>
+
+			<div class="update-section">
+				<div class="update-info">
+					<div class="version-row">
+						<span class="version-label">Installed version</span>
+						<span class="version-value">{currentVersion || '...'}</span>
+					</div>
+					{#if latestVersion}
+						<div class="version-row">
+							<span class="version-label">Latest version</span>
+							<span class="version-value">{latestVersion}</span>
+						</div>
+					{/if}
+					{#if publishedAt}
+						<div class="version-row">
+							<span class="version-label">Published</span>
+							<span class="version-value">{new Date(publishedAt).toLocaleDateString()}</span>
+						</div>
+					{/if}
+				</div>
+
+				{#if updateAvailable && releaseNotes}
+					<div class="release-notes">
+						<span class="release-notes-title">Release notes</span>
+						<p class="release-notes-body">{releaseNotes}</p>
+					</div>
+				{/if}
+
+				{#if updateError}
+					<div class="update-error">{updateError}</div>
+				{/if}
+
+				<div class="update-actions">
+					{#if updateAvailable}
+						{#if showUpdateConfirm}
+							<div class="confirm-actions">
+								<button class="btn btn-secondary btn-sm" onclick={() => showUpdateConfirm = false}>Cancel</button>
+								<button class="btn btn-primary btn-sm" onclick={handleDoUpdate} disabled={updating}>
+									{#if updating}Updating...{:else}Confirm Update{/if}
+								</button>
+							</div>
+						{:else}
+							<button class="btn btn-primary" onclick={() => showUpdateConfirm = true} disabled={updating}>
+								{#if updating}Updating...{:else}Update to v{latestVersion}{/if}
+							</button>
+						{/if}
+					{:else}
+						<button class="btn btn-secondary" onclick={handleCheckUpdate} disabled={checking}>
+							{#if checking}Checking...{:else}Check for Updates{/if}
+						</button>
+						{#if latestVersion && !updateAvailable}
+							<span class="up-to-date">Up to date</span>
+						{/if}
+					{/if}
+				</div>
+			</div>
+		</div>
+
+		<div class="form-card">
 			<h2 class="card-title">Maintenance</h2>
 
 			<div class="maintenance-actions">
@@ -339,6 +471,24 @@
 		color: var(--color-text-muted); cursor: pointer; font-size: 14px; flex-shrink: 0;
 	}
 	.btn-icon:hover { background: var(--color-danger-muted); color: var(--color-danger); }
+
+	/* Update */
+	.update-section { display: flex; flex-direction: column; gap: 16px; }
+	.update-info { display: flex; flex-direction: column; gap: 8px; }
+	.version-row { display: flex; align-items: center; gap: 12px; }
+	.version-label { font-size: 13px; color: var(--color-text-secondary); min-width: 130px; }
+	.version-value { font-size: 14px; color: var(--color-text-primary); font-weight: 500; }
+	.release-notes {
+		padding: 12px; background: var(--color-surface-700); border-radius: var(--radius-sm);
+	}
+	.release-notes-title { font-size: 12px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+	.release-notes-body { font-size: 13px; color: var(--color-text-secondary); margin: 6px 0 0; white-space: pre-wrap; }
+	.update-error {
+		font-size: 13px; color: var(--color-danger); padding: 8px 12px;
+		background: var(--color-danger-muted); border-radius: var(--radius-sm);
+	}
+	.update-actions { display: flex; align-items: center; gap: 12px; }
+	.up-to-date { font-size: 13px; color: var(--color-success); }
 
 	/* Maintenance */
 	.maintenance-actions { display: flex; flex-direction: column; gap: 16px; }

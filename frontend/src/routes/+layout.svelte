@@ -7,8 +7,9 @@
 	import { call } from '$api/ubus';
 	import { fetchInterfaces } from '$stores/network';
 	import { fetchWirelessStatus, fetchDhcpLeases } from '$stores/wireless';
-	import { fetchMeshTopology, fetchMeshConfig } from '$stores/mesh';
+	import { fetchMeshTopology, fetchMeshConfig, initWirelessProvider } from '$stores/mesh';
 	import { register, unregisterAll } from '$stores/polling';
+	import { fetchFeatures } from '$stores/features';
 	import Sidebar from '$components/layout/Sidebar.svelte';
 	import TopBar from '$components/layout/TopBar.svelte';
 	import { sidebarPinned } from '$stores/preferences';
@@ -49,11 +50,14 @@
 	$effect(() => {
 		if (isAuthenticated && !isLoginPage) {
 			fetchSystemData();
+			fetchFeatures();
 			fetchInterfaces();
 			fetchWirelessStatus();
 			fetchDhcpLeases();
-			fetchMeshTopology();
-			fetchMeshConfig();
+			initWirelessProvider().then(() => {
+				fetchMeshTopology();
+				fetchMeshConfig();
+			});
 
 			register('system', fetchSystemData, 5000);
 			register('interfaces', fetchInterfaces, 5000);

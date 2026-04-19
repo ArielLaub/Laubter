@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { dhcpLeaseList } from '$stores/wireless';
 	import { meshClientMap } from '$stores/mesh';
+	import { wifiClients } from '$stores/wireless';
 	import { call } from '$api/ubus';
 	import { formatBytes } from '$utils/format';
 	import { Wifi, Cable, ShieldBan, ArrowDown, ArrowUp } from 'lucide-svelte';
@@ -42,12 +43,15 @@
 	const clients = $derived.by(() => {
 		return $dhcpLeaseList.map((lease) => {
 			const mesh = $meshClientMap.get(lease.mac.toLowerCase());
+			const localWifi = $wifiClients.get(lease.mac.toLowerCase());
 			const traffic = trafficMap.get(lease.mac.toLowerCase());
 			return {
 				hostname: lease.hostname || '(unknown)',
 				ip: lease.ip,
 				mac: lease.mac,
-				isWireless: mesh?.isWireless ?? false,
+				isWireless: mesh?.isWireless ?? !!localWifi,
+				band: mesh?.band,
+				signal: mesh?.signal ?? localWifi?.signal,
 				leaseExpire: lease.expire,
 				rxBytes: traffic?.rx ?? 0,
 				txBytes: traffic?.tx ?? 0,

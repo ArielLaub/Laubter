@@ -3,47 +3,58 @@
 	import {
 		LayoutDashboard, Users, Network, BarChart3, Shield, ShieldCheck, ScrollText,
 		Settings, Waypoints, ChevronDown, ArrowDown, ArrowUp,
-		Lock, Table
+		Lock, Table, Wifi
 	} from 'lucide-svelte';
 	import { formatSpeed } from '$utils/format';
 	import { sidebarPinned } from '$stores/preferences';
+	import { activeProviderName, activeProviderLabel } from '$stores/mesh';
+	import { enabledFeatures } from '$stores/features';
 
 	interface NavItem {
 		icon: typeof LayoutDashboard;
 		label: string;
 		href: string;
+		feature?: string;
 	}
 
 	interface SettingsSubItem {
 		label: string;
 		href: string;
+		feature?: string;
 	}
 
-	const navItems: NavItem[] = [
+	const wifiLabel = $derived($activeProviderName === 'asus' ? 'WiFi Mesh' : 'WiFi');
+	const allNavItems: NavItem[] = $derived([
 		{ icon: LayoutDashboard, label: 'Dashboard', href: '/' },
-		{ icon: Waypoints, label: 'WiFi Mesh (Asus)', href: '/mesh' },
+		{ icon: $activeProviderName === 'asus' ? Waypoints : Wifi, label: wifiLabel, href: '/mesh' },
 		{ icon: Users, label: 'Clients', href: '/clients' },
 		{ icon: Network, label: 'Interfaces', href: '/ports' },
 		{ icon: BarChart3, label: 'Statistics', href: '/statistics' },
 		{ icon: Shield, label: 'Firewall', href: '/settings/firewall' },
-		{ icon: Lock, label: 'VPN (WireGuard)', href: '/settings/vpn' },
+		{ icon: Lock, label: 'VPN (WireGuard)', href: '/settings/vpn', feature: 'vpn' },
 		{ icon: Table, label: 'DHCP', href: '/settings/dhcp' },
-		{ icon: ShieldCheck, label: 'AdGuard', href: '/settings/adguard' },
+		{ icon: ShieldCheck, label: 'AdGuard', href: '/settings/adguard', feature: 'adguard' },
 		{ icon: ScrollText, label: 'Log', href: '/log' },
-	];
+	]);
 
-	const settingsItems: SettingsSubItem[] = [
-		{ label: 'Mesh WiFi', href: '/settings/wifi' },
+	const navItems = $derived(allNavItems.filter((item) => !item.feature || $enabledFeatures.has(item.feature)));
+
+	const settingsWifiLabel = $derived($activeProviderName === 'asus' ? 'Mesh WiFi' : 'WiFi');
+	const allSettingsItems: SettingsSubItem[] = $derived([
+		{ label: settingsWifiLabel, href: '/settings/wifi' },
 		{ label: 'Networks', href: '/settings/networks' },
 		{ label: 'Internet', href: '/settings/internet' },
 		{ label: 'DNS', href: '/settings/dns' },
 		{ label: 'Routing', href: '/settings/routing' },
-		{ label: 'Speed Test', href: '/settings/speedtest' },
-		{ label: 'Home Assistant', href: '/settings/mqtt' },
+		{ label: 'Speed Test', href: '/settings/speedtest', feature: 'speedtest' },
+		{ label: 'Home Assistant', href: '/settings/mqtt', feature: 'mqtt' },
 		{ label: 'Processes', href: '/settings/processes' },
+		{ label: 'Features', href: '/settings/features' },
 		{ label: 'System', href: '/settings/system' },
 		{ label: 'Packages', href: '/settings/packages' },
-	];
+	]);
+
+	const settingsItems = $derived(allSettingsItems.filter((item) => !item.feature || $enabledFeatures.has(item.feature)));
 
 	let settingsOpen = $state(false);
 

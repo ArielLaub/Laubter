@@ -31,7 +31,8 @@
 				"laubter-traffic": ["get_clients"],
 				"laubter-mqtt": ["get_config", "configure", "test_connection", "get_tracked_devices", "add_tracked_device", "remove_tracked_device", "get_zone_mappings", "set_zone_mapping", "get_ha_zones", "set_ha_token", "publish_discovery"],
 				"laubter-processes": ["get_all", "kill"],
-				"laubter-adguard": ["get_status", "get_stats", "get_querylog", "get_filtering", "toggle_protection", "toggle_filtering", "toggle_safebrowsing", "toggle_parental", "add_filter", "remove_filter", "add_user_rule", "remove_user_rule", "get_querylog_config", "set_querylog_config", "get_clients"]
+				"laubter-adguard": ["get_status", "get_stats", "get_querylog", "get_filtering", "toggle_protection", "toggle_filtering", "toggle_safebrowsing", "toggle_parental", "add_filter", "remove_filter", "add_user_rule", "remove_user_rule", "get_querylog_config", "set_querylog_config", "get_clients"],
+				"laubter-update": ["get_version", "check_update", "get_features"]
 			},
 			"uci": [
 				"network", "wireless", "dhcp", "firewall", "system",
@@ -55,7 +56,8 @@
 				"network.interface.*": ["up", "down", "renew"],
 				"system": ["reboot"],
 				"rpc-sys": ["packageinstall", "packageremove", "upgrade_start", "upgrade_clean", "password_set", "factory"],
-				"rc": ["init"]
+				"rc": ["init"],
+				"laubter-update": ["do_update", "enable_feature", "disable_feature"]
 			},
 			"uci": [
 				"network", "wireless", "dhcp", "firewall", "system",

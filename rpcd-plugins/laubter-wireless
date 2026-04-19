@@ -1,23 +1,29 @@
 #!/bin/sh
-# laubter-wireless: Aggregated wireless info for Laubter
-# Replaces luci-rpc.getWirelessDevices
-# Combines iwinfo + channel survey data
+# laubter-wireless: OpenWrt native wireless management for Laubter
+# Provides WiFi client listing, radio config, and iwinfo data
 
 . /usr/share/libubox/jshn.sh
 
 case "$1" in
 	list)
-		echo '{ "get_survey": { "device": "str" }, "get_scan": { "device": "str" } }'
+		cat <<-'EOF'
+{
+	"get_survey": { "device": "str" },
+	"get_scan": { "device": "str" },
+	"get_clients": {},
+	"get_config": {},
+	"set_config": { "section": "str", "option": "str", "value": "str" },
+	"reload": {}
+}
+EOF
 		;;
 	call)
 		case "$2" in
 			get_survey)
-				# Read JSON input for device param
 				read -r input
 				json_load "$input"
 				json_get_var device device
 
-				# Return channel survey data from iwinfo
 				if [ -n "$device" ] && command -v iwinfo >/dev/null 2>&1; then
 					iwinfo "$device" survey 2>/dev/null || echo '[]'
 				else
@@ -35,6 +41,80 @@ case "$1" in
 				else
 					echo '[]'
 				fi
+				;;
+
+			get_clients)
+				# Return all wireless clients from all hostapd interfaces
+				# Output: { "clients": { "<mac>": { "signal": N, "freq": N, "ifname": "...", ... } } }
+				json_init
+				json_add_object "clients"
+
+				# Iterate over hostapd instances
+				for iface in $(ubus list 2>/dev/null | grep '^hostapd\.' | sed 's/^hostapd\.//'); do
+					RESULT=$(ubus call "hostapd.$iface" get_clients 2>/dev/null)
+					[ -z "$RESULT" ] && continue
+
+					FREQ=$(echo "$RESULT" | jsonfilter -e '@.freq' 2>/dev/null)
+
+					# Extract each client
+					echo "$RESULT" | jsonfilter -e '@.clients' 2>/dev/null | {
+						while IFS= read -r line; do
+							# Parse client MACs from the JSON
+							for mac in $(echo "$RESULT" | jsonfilter -e '@.clients.*' -l 100 2>/dev/null | head -100); do
+								break
+							done
+						done
+					}
+
+					# Use jsonfilter to iterate clients
+					MACS=$(echo "$RESULT" | jsonfilter -e '@.clients' 2>/dev/null | grep -o '"[0-9A-Fa-f:]\{17\}"' | tr -d '"')
+
+					for mac in $MACS; do
+						SIGNAL=$(echo "$RESULT" | jsonfilter -e "@.clients[\"$mac\"].signal" 2>/dev/null)
+						RX_RATE=$(echo "$RESULT" | jsonfilter -e "@.clients[\"$mac\"].rate.rx" 2>/dev/null)
+						TX_RATE=$(echo "$RESULT" | jsonfilter -e "@.clients[\"$mac\"].rate.tx" 2>/dev/null)
+						WIFI_GEN=$(echo "$RESULT" | jsonfilter -e "@.clients[\"$mac\"].wifi_generation" 2>/dev/null)
+
+						json_add_object "$mac"
+						json_add_int "signal" "${SIGNAL:-0}"
+						json_add_int "freq" "${FREQ:-0}"
+						json_add_string "ifname" "$iface"
+						json_add_int "rx_rate" "${RX_RATE:-0}"
+						json_add_int "tx_rate" "${TX_RATE:-0}"
+						[ -n "$WIFI_GEN" ] && json_add_int "wifi_generation" "$WIFI_GEN"
+						json_close_object
+					done
+				done
+
+				json_close_object
+				json_dump
+				;;
+
+			get_config)
+				# Return wireless UCI config as JSON
+				# Uses ubus call network.wireless status for live state
+				ubus call network.wireless status 2>/dev/null || echo '{}'
+				;;
+
+			set_config)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var section section
+				json_get_var option option
+				json_get_var value value
+
+				if [ -n "$section" ] && [ -n "$option" ]; then
+					uci set "wireless.${section}.${option}=${value}"
+					uci commit wireless
+					echo '{"status":"ok"}'
+				else
+					echo '{"status":"error","message":"section and option required"}'
+				fi
+				;;
+
+			reload)
+				wifi reload 2>/dev/null
+				echo '{"status":"ok"}'
 				;;
 		esac
 		;;

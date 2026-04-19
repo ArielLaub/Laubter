@@ -1,23 +1,21 @@
 <script lang="ts">
-	import { meshNodes, meshClients, meshSsid, meshTopology, fetchMeshTopology } from '$stores/mesh';
-	import { call } from '$api/ubus';
+	import { meshNodes, meshClients, meshSsid, meshTopology, fetchMeshTopology, activeCapabilities, activeProviderLabel, bindClient } from '$stores/mesh';
 	import { Router, Wifi, Cable, Search, Radio, Signal, Link, Unlink } from 'lucide-svelte';
 	import SignalBars from '$components/shared/SignalBars.svelte';
 	import DetailPanel from '$components/shared/DetailPanel.svelte';
-	import type { MeshClient, MeshNode } from '$lib/mesh/types';
+	import type { WirelessClient, WirelessNode } from '$lib/wireless/types';
 
 	let activeTab = $state<'topology' | 'clients'>('topology');
 	let searchQuery = $state('');
 	let sortColumn = $state<string>('signal');
 	let sortAsc = $state(false);
-	let selectedClient = $state<MeshClient | null>(null);
+	let selectedClient = $state<WirelessClient | null>(null);
 	let panelOpen = $state(false);
 	let selectedNodeFilter = $state<string | null>(null);
 
-	const provider = $derived($meshTopology?.provider ?? 'mesh');
-	const providerLabel = $derived(
-		provider === 'asus' ? 'ASUS AiMesh' : provider.charAt(0).toUpperCase() + provider.slice(1)
-	);
+	const providerLabel = $derived($activeProviderLabel);
+	const canBind = $derived($activeCapabilities.clientBinding);
+	const isMultiNode = $derived($activeCapabilities.multiNode);
 	const onlineNodes = $derived($meshNodes.filter((n) => n.online).length);
 
 	// Only wireless clients
@@ -34,8 +32,8 @@
 	);
 
 	// Get clients per node for the topology cards
-	function clientsForNode(node: MeshNode): number {
-		return wirelessClients.filter((c) => c.connectedTo === node.mac.toLowerCase()).length;
+	function clientsForNode(node: WirelessNode): number {
+		return wirelessClients.filter((c) => c.connectedTo === node.id).length;
 	}
 
 	// Filtered + sorted wireless client list
@@ -126,11 +124,11 @@
 		}
 	}
 
-	let bindingClient = $state<MeshClient | null>(null);
+	let bindingClient = $state<WirelessClient | null>(null);
 	let bindTargetNode = $state('');
 	let bindLoading = $state(false);
 
-	function startBind(client: MeshClient) {
+	function startBind(client: WirelessClient) {
 		bindingClient = client;
 		bindTargetNode = client.boundToMac || '';
 	}
@@ -139,13 +137,8 @@
 		if (!bindingClient) return;
 		bindLoading = true;
 		try {
-			await call('laubter-mesh', 'bind_client', {
-				client_mac: bindingClient.mac.toUpperCase(),
-				target_mac: bindTargetNode || '',
-				band: '0'
-			});
+			await bindClient(bindingClient.mac, bindTargetNode || '');
 			bindingClient = null;
-			// Refresh data
 			setTimeout(() => fetchMeshTopology(), 2000);
 		} catch (e) {
 			console.error('Bind failed:', e);
@@ -154,7 +147,7 @@
 		}
 	}
 
-	function openClientDetail(client: MeshClient) {
+	function openClientDetail(client: WirelessClient) {
 		selectedClient = client;
 		panelOpen = true;
 	}
@@ -217,11 +210,11 @@
 				<div class="tree-panel">
 					{#if mainNode}
 						{@const mainCount = clientsForNode(mainNode)}
-						{@const mainFiltered = selectedNodeFilter === mainNode.mac.toLowerCase()}
+						{@const mainFiltered = selectedNodeFilter === mainNode.id}
 
 						<!-- Primary node -->
 						<button class="tree-node main" class:active={mainFiltered}
-							onclick={() => selectNode(mainNode.mac.toLowerCase())}>
+							onclick={() => selectNode(mainNode.id)}>
 							<div class="tn-icon online"><Router size={22} strokeWidth={1.5} /></div>
 							<div class="tn-led on"></div>
 							<div class="tn-body">
@@ -239,11 +232,11 @@
 						<!-- Child nodes branching from primary -->
 						{#each childNodes as node, i (node.id)}
 							{@const count = clientsForNode(node)}
-							{@const isFiltered = selectedNodeFilter === node.mac.toLowerCase()}
+							{@const isFiltered = selectedNodeFilter === node.id}
 							{@const isLast = i === childNodes.length - 1}
 							<div class="tree-branch" class:last={isLast} style="--link-color: {linkColor(node.linkRate)}">
 								<button class="tree-node child" class:active={isFiltered}
-									onclick={() => selectNode(node.mac.toLowerCase())}>
+									onclick={() => selectNode(node.id)}>
 									<div class="tn-icon" class:online={node.online}><Router size={20} strokeWidth={1.5} /></div>
 									<div class="tn-led" class:on={node.online}></div>
 									<div class="tn-body">
@@ -275,7 +268,7 @@
 				<span class="count-badge">{filtered.length}</span>
 			</h2>
 			{#if selectedNodeFilter}
-				{@const nodeName = $meshNodes.find(n => n.mac.toLowerCase() === selectedNodeFilter)?.alias ?? ''}
+				{@const nodeName = $meshNodes.find(n => n.id === selectedNodeFilter)?.alias ?? ''}
 				<button class="filter-tag" onclick={() => { selectedNodeFilter = null; }}>
 					Showing: {nodeName} &times;
 				</button>
@@ -298,8 +291,8 @@
 						<th onclick={() => toggleSort('band')}>Band{sortIcon('band')}</th>
 						<th onclick={() => toggleSort('signal')}>Signal{sortIcon('signal')}</th>
 						<th onclick={() => toggleSort('speed')}>Speed{sortIcon('speed')}</th>
-						<th onclick={() => toggleSort('node')}>Mesh Node{sortIcon('node')}</th>
-						<th>Bound</th>
+						{#if isMultiNode}<th onclick={() => toggleSort('node')}>Mesh Node{sortIcon('node')}</th>{/if}
+						{#if canBind}<th>Bound</th>{/if}
 						<th>Uptime</th>
 					</tr>
 				</thead>
@@ -337,8 +330,8 @@
 									<span class="muted">—</span>
 								{/if}
 							</td>
-							<td class="node-cell">{client.connectedToName || '—'}</td>
-							<td class="bound-cell">
+							{#if isMultiNode}<td class="node-cell">{client.connectedToName || '—'}</td>{/if}
+							{#if canBind}<td class="bound-cell">
 								{#if client.boundToName}
 									<span class="bound-badge" title="Bound to {client.boundToName}">
 										<Link size={11} /> {client.boundToName}
@@ -347,11 +340,11 @@
 								<button class="bind-btn" title={client.boundToMac ? 'Change/Unbind' : 'Bind to node'} onclick={(e) => { e.stopPropagation(); startBind(client); }}>
 									{#if client.boundToMac}<Unlink size={12} />{:else}<Link size={12} />{/if}
 								</button>
-							</td>
+							</td>{/if}
 							<td class="mono">{client.connectTime || '—'}</td>
 						</tr>
 					{:else}
-						<tr><td colspan="8" class="empty">No wireless clients {selectedNodeFilter ? 'on this node' : 'found'}</td></tr>
+						<tr><td colspan={5 + (isMultiNode ? 1 : 0) + (canBind ? 1 : 0) + 1} class="empty">No wireless clients {selectedNodeFilter ? 'on this node' : 'found'}</td></tr>
 					{/each}
 				</tbody>
 			</table>
@@ -369,7 +362,7 @@
 			{#if selectedClient.vendor}<div class="dp-row"><span class="dp-l">Vendor</span><span class="dp-v">{selectedClient.vendor}</span></div>{/if}
 			<div class="dp-row"><span class="dp-l">Band</span><span class="dp-v">{#if selectedClient.band}<span class="band-pill" style="--band-color: {bandColor(selectedClient.band)}">{selectedClient.band}</span>{:else}—{/if}</span></div>
 			{#if selectedClient.signal != null}<div class="dp-row"><span class="dp-l">Signal</span><span class="dp-v">{selectedClient.signal} dBm</span></div>{/if}
-			<div class="dp-row"><span class="dp-l">Mesh Node</span><span class="dp-v">{selectedClient.connectedToName}</span></div>
+			{#if isMultiNode}<div class="dp-row"><span class="dp-l">Mesh Node</span><span class="dp-v">{selectedClient.connectedToName}</span></div>{/if}
 			{#if selectedClient.txRate}<div class="dp-row"><span class="dp-l">TX Rate</span><span class="dp-v mono">{formatRate(selectedClient.txRate)}</span></div>{/if}
 			{#if selectedClient.rxRate}<div class="dp-row"><span class="dp-l">RX Rate</span><span class="dp-v mono">{formatRate(selectedClient.rxRate)}</span></div>{/if}
 			{#if selectedClient.connectTime}<div class="dp-row"><span class="dp-l">Connected</span><span class="dp-v mono">{selectedClient.connectTime}</span></div>{/if}
@@ -378,7 +371,7 @@
 </DetailPanel>
 
 <!-- Bind modal -->
-{#if bindingClient}
+{#if canBind && bindingClient}
 	<div class="modal-backdrop" role="presentation" onclick={() => { bindingClient = null; }}>
 		<div class="modal-card" role="dialog" onclick={(e) => e.stopPropagation()}>
 			<h3 class="modal-title">Bind Client to Node</h3>

@@ -1,14 +1,5 @@
 #!/bin/sh
 
-# === Dependencies ===
-# Install required packages if missing
-for pkg in curl coreutils-base64 wireguard-tools qrencode nlbwmon mosquitto-client-nossl; do
-    if ! apk info -e "$pkg" >/dev/null 2>&1; then
-        echo "Installing dependency: $pkg"
-        apk add "$pkg" 2>/dev/null
-    fi
-done
-
 # === uhttpd config for Laubter UI (port 3000) ===
 if ! uci -q get uhttpd.laubter > /dev/null; then
     uci batch <<-EOF
