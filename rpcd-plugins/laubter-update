@@ -129,10 +129,7 @@ case "$1" in
 				fi
 
 				# Find the feature's packages
-				PKGS=""
-				echo "$FEATURES" | while IFS='|' read -r id label desc pkgs; do
-					[ "$id" = "$FEAT_ID" ] && echo "$pkgs"
-				done | read -r PKGS
+				PKGS=$(echo "$FEATURES" | awk -F'|' -v fid="$FEAT_ID" '$1 == fid { print $4 }')
 
 				if [ -z "$PKGS" ]; then
 					echo "{\"success\":false,\"error\":\"Unknown feature: $FEAT_ID\"}"
