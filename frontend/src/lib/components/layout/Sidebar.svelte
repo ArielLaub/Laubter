@@ -191,11 +191,11 @@
 	.tree-item {
 		display: block; padding: 6px 14px; margin: 0 8px 0 0;
 		font-size: 12px; color: var(--color-text-muted); text-decoration: none;
-		border-radius: 6px; border-left: 2px solid var(--color-surface-500);
+		border-radius: 6px;
 		transition: all 0.15s ease;
 	}
-	.tree-item:hover { color: var(--color-text-primary); background: rgba(255,255,255,0.04); border-left-color: var(--color-text-muted); }
-	.tree-item.active { color: var(--color-accent-light); border-left-color: var(--color-accent); background: var(--color-accent-muted); }
+	.tree-item:hover { color: var(--color-text-primary); background: rgba(255,255,255,0.04); }
+	.tree-item.active { color: var(--color-accent-light); background: var(--color-accent-muted); }
 
 	.nav-separator { height: 1px; background: var(--color-surface-500); margin: 6px 16px; }
 
