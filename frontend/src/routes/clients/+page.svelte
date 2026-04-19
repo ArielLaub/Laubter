@@ -157,7 +157,7 @@
 				</tr>
 			</thead>
 			<tbody>
-				{#each sorted as client, i (client.mac)}
+				{#each sorted as client, i (client.mac + client.ip)}
 					<tr class="clickable-row" class:row-odd={i % 2 === 1} onclick={() => openClientDetail(client)}>
 						<td class="name-cell">
 							<span class="status-dot" class:active={isLeaseActive(client.leaseExpire)} class:expired={!isLeaseActive(client.leaseExpire)}></span>
