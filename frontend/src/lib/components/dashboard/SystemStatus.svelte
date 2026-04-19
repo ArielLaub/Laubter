@@ -15,8 +15,8 @@
 
 	const loadAvg = $derived($systemInfo ? formatLoad($systemInfo.load[0]) : '0.00');
 
-	const rootUsed = $derived($systemInfo?.root?.used ?? 0);
-	const rootTotal = $derived($systemInfo?.root?.total ?? 0);
+	const rootUsed = $derived(($systemInfo?.root?.used ?? 0) * 1024);
+	const rootTotal = $derived(($systemInfo?.root?.total ?? 0) * 1024);
 	const rootPercent = $derived(rootTotal > 0 ? Math.round((rootUsed / rootTotal) * 100) : 0);
 
 	// CPU % and Temperature from laubter-stats (real CPU usage, not load average)
