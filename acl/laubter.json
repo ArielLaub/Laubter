@@ -24,7 +24,7 @@
 				"laubter-firewall": ["get_conntrack", "get_recent_blocks", "get_ruleset_summary"],
 				"laubter-bandwidth": ["get_data", "get_stats", "record_sample"],
 				"laubter-stats": ["record", "get_history", "get_current", "get_peaks"],
-				"laubter-mesh": ["get_nodes", "get_clients", "get_topology", "get_wireless_clients", "get_wired_clients", "get_info", "bind_client", "configure", "get_config", "test_connection"],
+				"laubter-mesh": ["get_nodes", "get_clients", "get_topology", "get_wireless_clients", "get_wired_clients", "get_info", "bind_client", "configure", "get_config", "test_connection", "set_node_config", "reboot_node"],
 				"laubter-vpn": ["generate_keypair", "generate_psk", "get_status", "generate_qr", "get_client_config", "get_server_public_key", "get_wan_ip", "setup_server", "add_peer", "remove_peer"],
 				"laubter-ddns": ["update", "get_status", "get_config", "configure", "test"],
 				"laubter-speedtest": ["start", "get_progress", "get_last", "get_history"],

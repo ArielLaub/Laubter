@@ -46,12 +46,30 @@ asus_login() {
 }
 
 asus_ensure_auth() {
+	NOW=$(date +%s)
+
+	# Cooldown: don't attempt login if we applied settings recently (ASUS restarts httpd)
+	if [ -f "$DATA_DIR/.cooldown" ]; then
+		COOL_TIME=$(cat "$DATA_DIR/.cooldown" 2>/dev/null || echo 0)
+		COOL_AGE=$((NOW - COOL_TIME))
+		[ "$COOL_AGE" -lt 15 ] && return 1
+		rm -f "$DATA_DIR/.cooldown"
+	fi
+
+	# Rate limit: no more than 1 login attempt per 30 seconds
+	if [ -f "$DATA_DIR/.last_login_attempt" ]; then
+		LAST=$(cat "$DATA_DIR/.last_login_attempt" 2>/dev/null || echo 0)
+		SINCE=$((NOW - LAST))
+		[ "$SINCE" -lt 30 ] && [ -f "$DATA_DIR/.token" ] && return 0
+		[ "$SINCE" -lt 30 ] && return 1
+	fi
+
 	if [ -f "$DATA_DIR/.auth_time" ]; then
 		AUTH_TIME=$(cat "$DATA_DIR/.auth_time" 2>/dev/null || echo 0)
-		NOW=$(date +%s)
 		AGE=$((NOW - AUTH_TIME))
 		[ "$AGE" -lt 1200 ] && return 0
 	fi
+	date +%s > "$DATA_DIR/.last_login_attempt"
 	asus_login
 }
 
@@ -89,6 +107,33 @@ asus_fetch() {
 	[ -n "$RESULT" ] && echo "$RESULT" > "$cache_file" && echo "$RESULT" || echo '{}'
 }
 
+asus_apply() {
+	local post_data="$1"
+
+	asus_ensure_auth || { echo '{"error":"Not authenticated"}'; return 1; }
+
+	get_config
+	TOKEN=$(cat "$DATA_DIR/.token" 2>/dev/null)
+
+	RESULT=$(curl -sk -X POST \
+		-H "Cookie: asus_s_token=${TOKEN}" \
+		-H "user-agent: asusrouter-Android-DUTUtil-1.0.0.245" \
+		"${MESH_URL}/applyapp.cgi" \
+		-d "$post_data" 2>/dev/null)
+
+	# Clear cache and set cooldown after any apply action
+	rm -f "$DATA_DIR"/cache_*.json "$DATA_DIR/.auth_time"
+	date +%s > "$DATA_DIR/.cooldown"
+
+	# Check for auth failure
+	if echo "$RESULT" | grep -q "Main_Login"; then
+		echo '{"error":"Session expired, please retry"}'
+		return 1
+	fi
+
+	echo "$RESULT"
+}
+
 case "$1" in
 	list)
 		cat <<-'EOF'
@@ -102,7 +147,9 @@ case "$1" in
 	"bind_client": { "client_mac": "str", "target_mac": "str", "band": "str" },
 	"configure": { "host": "str", "port": "str", "proto": "str", "username": "str", "password": "str", "provider": "str" },
 	"get_config": {},
-	"test_connection": {}
+	"test_connection": {},
+	"set_node_config": { "mac": "str", "led": "str", "backhaul_priority": "str", "preferred_uplink": "str" },
+	"reboot_node": { "mac": "str" }
 }
 EOF
 		;;
@@ -177,9 +224,8 @@ EOF
 				json_dump
 				;;
 			bind_client)
-				# Bind a client to a specific mesh node
-				# Params: client_mac, target_mac (node to bind to), band (0=auto)
-				# To unbind: target_mac=""
+				# Bind/unbind a client to a specific mesh node using sta_binding_list nvram
+				# Format: <NODE_MAC>enable>CLIENT_MAC,band_index|CLIENT2,band2...
 				read -r input
 				json_load "$input" 2>/dev/null
 				json_get_var client_mac client_mac
@@ -192,25 +238,181 @@ EOF
 				get_config
 				TOKEN=$(cat "$DATA_DIR/.token" 2>/dev/null)
 
+				# Get current binding list
+				CURRENT=$(curl -sk \
+					-H "Cookie: asus_s_token=${TOKEN}" \
+					-H "user-agent: asusrouter-Android-DUTUtil-1.0.0.245" \
+					"${MESH_URL}/appGet.cgi?hook=nvram_get(sta_binding_list)" 2>/dev/null)
+
+				# Parse current list (HTML-encoded: &#60 = <, &#62 = >, &#124 = |)
+				BIND_LIST=$(echo "$CURRENT" | grep -o '"sta_binding_list":"[^"]*"' | cut -d'"' -f4 \
+					| sed 's/&#60/</g; s/&#62/>/g; s/&#124/|/g; s/&#44/,/g')
+
 				if [ -z "$target_mac" ]; then
-					# Unbind
-					RESULT=$(curl -sk -X POST \
-						-H "Cookie: asus_s_token=${TOKEN}" \
-						-H "user-agent: asusrouter-Android-DUTUtil-1.0.0.245" \
-						"${MESH_URL}/applyapp.cgi" \
-						-d "action_mode=aimesh_unbind&client_mac=${client_mac}" 2>/dev/null)
+					# Unbind: remove client from all nodes in the list
+					NEW_LIST=""
+					IFS='<'
+					for entry in $BIND_LIST; do
+						[ -z "$entry" ] && continue
+						NODE=$(echo "$entry" | cut -d'>' -f1)
+						ENABLE=$(echo "$entry" | cut -d'>' -f2)
+						CLIENTS=$(echo "$entry" | cut -d'>' -f3)
+						# Remove this client from the client list
+						NEW_CLIENTS=""
+						IFS='|'
+						for cl in $CLIENTS; do
+							CL_MAC=$(echo "$cl" | cut -d',' -f1)
+							if [ "$(echo "$CL_MAC" | tr 'a-f' 'A-F')" != "$(echo "$client_mac" | tr 'a-f' 'A-F')" ]; then
+								[ -n "$NEW_CLIENTS" ] && NEW_CLIENTS="${NEW_CLIENTS}|"
+								NEW_CLIENTS="${NEW_CLIENTS}${cl}"
+							fi
+						done
+						unset IFS
+						# Keep node entry if it still has clients
+						if [ -n "$NEW_CLIENTS" ]; then
+							NEW_LIST="${NEW_LIST}<${NODE}>${ENABLE}>${NEW_CLIENTS}"
+						fi
+					done
+					unset IFS
 				else
-					# Bind
-					RESULT=$(curl -sk -X POST \
-						-H "Cookie: asus_s_token=${TOKEN}" \
-						-H "user-agent: asusrouter-Android-DUTUtil-1.0.0.245" \
-						"${MESH_URL}/applyapp.cgi" \
-						-d "action_mode=aimesh_bind&client_mac=${client_mac}&target_mac=${target_mac}&band=${band}" 2>/dev/null)
+					# Bind: first remove client from any existing node, then add to target
+					# Remove client from existing entries
+					CLEANED=""
+					IFS='<'
+					for entry in $BIND_LIST; do
+						[ -z "$entry" ] && continue
+						NODE=$(echo "$entry" | cut -d'>' -f1)
+						ENABLE=$(echo "$entry" | cut -d'>' -f2)
+						CLIENTS=$(echo "$entry" | cut -d'>' -f3)
+						NEW_CLIENTS=""
+						IFS='|'
+						for cl in $CLIENTS; do
+							CL_MAC=$(echo "$cl" | cut -d',' -f1)
+							if [ "$(echo "$CL_MAC" | tr 'a-f' 'A-F')" != "$(echo "$client_mac" | tr 'a-f' 'A-F')" ]; then
+								[ -n "$NEW_CLIENTS" ] && NEW_CLIENTS="${NEW_CLIENTS}|"
+								NEW_CLIENTS="${NEW_CLIENTS}${cl}"
+							fi
+						done
+						unset IFS
+						if [ -n "$NEW_CLIENTS" ]; then
+							CLEANED="${CLEANED}<${NODE}>${ENABLE}>${NEW_CLIENTS}"
+						fi
+					done
+					unset IFS
+
+					# Add client to target node
+					TARGET_UP=$(echo "$target_mac" | tr 'a-f' 'A-F')
+					CLIENT_UP=$(echo "$client_mac" | tr 'a-f' 'A-F')
+					# Check if target node already exists in list
+					if echo "$CLEANED" | grep -qi "<${TARGET_UP}>"; then
+						# Append client to existing node entry
+						NEW_LIST=$(echo "$CLEANED" | sed "s|<${TARGET_UP}>\([^>]*\)>\([^<]*\)|<${TARGET_UP}>\1>\2|${CLIENT_UP},${band}|")
+						# Simpler: rebuild
+						NEW_LIST=""
+						FOUND=0
+						IFS='<'
+						for entry in $CLEANED; do
+							[ -z "$entry" ] && continue
+							NODE=$(echo "$entry" | cut -d'>' -f1)
+							ENABLE=$(echo "$entry" | cut -d'>' -f2)
+							CLIENTS=$(echo "$entry" | cut -d'>' -f3)
+							if [ "$(echo "$NODE" | tr 'a-f' 'A-F')" = "$TARGET_UP" ]; then
+								CLIENTS="${CLIENTS}|${CLIENT_UP},${band}"
+								FOUND=1
+							fi
+							NEW_LIST="${NEW_LIST}<${NODE}>${ENABLE}>${CLIENTS}"
+						done
+						unset IFS
+						if [ "$FOUND" = "0" ]; then
+							NEW_LIST="${NEW_LIST}<${TARGET_UP}>1>${CLIENT_UP},${band}"
+						fi
+					else
+						NEW_LIST="${CLEANED}<${TARGET_UP}>1>${CLIENT_UP},${band}"
+					fi
 				fi
 
-				# Clear cache to refresh client data
-				rm -f "$DATA_DIR"/cache_*.json
+				# Apply via start_apply.htm
+				RESULT=$(curl -sk -X POST \
+					-H "Cookie: asus_s_token=${TOKEN}" \
+					-H "user-agent: asusrouter-Android-DUTUtil-1.0.0.245" \
+					-H "Referer: ${MESH_URL}/AiMesh.asp" \
+					"${MESH_URL}/start_apply.htm" \
+					--data-urlencode "action_mode=apply" \
+					--data-urlencode "rc_service=update_sta_binding" \
+					--data-urlencode "sta_binding_list=${NEW_LIST}" 2>/dev/null)
+
+				# Clear cache and set cooldown (ASUS restarts httpd after apply)
+				rm -f "$DATA_DIR"/cache_*.json "$DATA_DIR/.auth_time"
+				date +%s > "$DATA_DIR/.cooldown"
+
+				# Auth failure returns a tiny redirect page (~88 bytes)
+				# Success returns a full HTML page with done_committing()
+				RESULT_LEN=$(printf '%s' "$RESULT" | wc -c)
+				if [ "$RESULT_LEN" -lt 200 ] && echo "$RESULT" | grep -q "Main_Login"; then
+					echo '{"error":"Session expired, please retry"}'
+				else
+					echo '{"status":"ok"}'
+				fi
+				;;
+
+			set_node_config)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var mac mac
+				json_get_var led led
+				json_get_var backhaul_priority backhaul_priority
+				json_get_var preferred_uplink preferred_uplink
+
+				[ -z "$mac" ] && { echo '{"error":"mac required"}'; exit 0; }
+
+				# LED control
+				if [ -n "$led" ]; then
+					RESULT=$(asus_apply "action_mode=config&re_mac=${mac}&config={\"ctrl_led\":{\"led_val\":\"${led}\"}}")
+					if echo "$RESULT" | grep -q '"error"'; then
+						echo "$RESULT"
+						exit 0
+					fi
+				fi
+
+				# Backhaul priority: auto=3, ethernet=1, wireless=2
+				if [ -n "$backhaul_priority" ]; then
+					case "$backhaul_priority" in
+						ethernet) BH_VAL="1" ;;
+						wireless) BH_VAL="2" ;;
+						*) BH_VAL="3" ;;
+					esac
+					RESULT=$(asus_apply "action_mode=config&re_mac=${mac}&config={\"backhalctrl\":{\"amas_ethernet\":\"${BH_VAL}\"}}")
+					if echo "$RESULT" | grep -q '"error"'; then
+						echo "$RESULT"
+						exit 0
+					fi
+				fi
+
+				# Preferred uplink AP
+				if [ -n "$preferred_uplink" ]; then
+					RESULT=$(asus_apply "action_mode=config&re_mac=${mac}&config={\"prefer_ap\":{\"amas_wlc_target_bssid\":\"${preferred_uplink}\",\"amas_wlc0_target_bssid\":\"\",\"amas_wlc1_target_bssid\":\"\",\"amas_wlc2_target_bssid\":\"\"}}")
+					if echo "$RESULT" | grep -q '"error"'; then
+						echo "$RESULT"
+						exit 0
+					fi
+				fi
+
 				echo '{"status":"ok"}'
+				;;
+
+			reboot_node)
+				read -r input
+				json_load "$input" 2>/dev/null
+				json_get_var mac mac
+				[ -z "$mac" ] && { echo '{"error":"mac required"}'; exit 0; }
+
+				RESULT=$(asus_apply "action_mode=reboot&re_mac=${mac}")
+
+				if echo "$RESULT" | grep -q '"error"'; then
+					echo "$RESULT"
+				else
+					echo '{"status":"ok"}'
+				fi
 				;;
 
 			test_connection)

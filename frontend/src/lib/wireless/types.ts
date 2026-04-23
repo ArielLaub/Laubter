@@ -3,6 +3,13 @@
  * Supports ASUS AiMesh, OpenWrt native WiFi, and future providers (TP-Link Deco, etc.).
  */
 
+export interface NodeConfig {
+	ledEnabled?: boolean;
+	backhaulPriority?: string;   // "auto", "ethernet", "wireless"
+	preferredUplink?: string;    // BSSID or empty for auto
+	radioEnabled?: Record<string, boolean>;
+}
+
 export interface WirelessNode {
 	id: string;              // MAC address or radio name (unique identifier)
 	alias: string;           // User-friendly name ("Office", "5 GHz Radio")
@@ -15,10 +22,20 @@ export interface WirelessNode {
 	isMainNode: boolean;     // true for the primary/root AP
 	radios: WirelessRadio[];
 	backhaulType: 'wired' | 'wireless' | 'unknown';
+	backhaulBand?: WirelessBand; // which band for wireless backhaul
 	backhaulRssi?: number;
+	backhaulSsid?: string;       // backhaul SSID (e.g., "Laub_dwb")
 	linkRate?: string;       // Link speed: 'Q'=2.5G, 'G'=1G, 'M'=100M
 	level: number;           // hop count from main node (0 = main)
 	wiredMacs: string[];     // MACs of wired ports on this node
+	parentMac?: string;      // node MAC this connects through
+	parentName?: string;     // parent node alias
+	connectionQuality?: 'good' | 'ok' | 'weak' | 'poor';
+	productId?: string;
+	newFirmware?: string;
+	bandCount?: number;
+	config?: NodeConfig;
+	children?: string[];     // child node MACs (for tree rendering)
 }
 
 export interface WirelessRadio {
