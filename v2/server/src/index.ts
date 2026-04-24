@@ -80,7 +80,15 @@ async function main(): Promise<void> {
 
   // Bundled plugins (always available)
   const { default: systemPlugin } = await import('./plugins/system.js');
-  const bundledPlugins = [systemPlugin];
+  const { default: networkPlugin } = await import('./plugins/network.js');
+  const { default: dhcpPlugin } = await import('./plugins/dhcp.js');
+  const { default: firewallPlugin } = await import('./plugins/firewall.js');
+  const { default: wirelessPlugin } = await import('./plugins/wireless.js');
+  const { default: trafficPlugin } = await import('./plugins/traffic.js');
+  const { default: meshPlugin } = await import('./plugins/mesh.js');
+  const { default: vpnPlugin } = await import('./plugins/vpn.js');
+  const { default: dnsPlugin } = await import('./plugins/dns.js');
+  const bundledPlugins = [systemPlugin, networkPlugin, dhcpPlugin, firewallPlugin, wirelessPlugin, trafficPlugin, meshPlugin, vpnPlugin, dnsPlugin];
 
   for (const plugin of bundledPlugins) {
     try {
