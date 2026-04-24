@@ -12,6 +12,8 @@
     load: number[];
   }>('system:metrics');
 
+  const conntrack = subscribe<{ count: number; max: number }>('firewall:conntrack');
+
   // One-time board info
   let board = $state<{ hostname: string; model: string; system: string } | null>(null);
   let leaseCount = $state(0);
@@ -130,7 +132,7 @@
           <Globe size={16} />Network
         </div>
       </div>
-      <div class="grid grid-cols-2 gap-3">
+      <div class="grid grid-cols-3 gap-3">
         <div>
           <div class="text-xl font-bold text-white">{leaseCount}</div>
           <div class="text-[11px] text-[#8b949e]">Clients</div>
@@ -138,6 +140,10 @@
         <div>
           <div class="text-xl font-bold text-white">{meshNodes}</div>
           <div class="text-[11px] text-[#8b949e]">Mesh Nodes</div>
+        </div>
+        <div>
+          <div class="text-xl font-bold text-white font-mono">{($conntrack?.count ?? 0).toLocaleString()}</div>
+          <div class="text-[11px] text-[#8b949e]">Connections</div>
         </div>
         <div>
           <div class="text-xl font-bold text-white">{dnsStats?.num_dns_queries?.toLocaleString() ?? '...'}</div>

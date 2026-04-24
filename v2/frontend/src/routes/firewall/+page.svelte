@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { subscribe } from '$lib/stores/websocket';
   import { api } from '$lib/api/client';
-  import { Shield, Activity, Plus, Pencil, Trash2, ChevronRight } from 'lucide-svelte';
+  import { Plus, Pencil, Trash2 } from 'lucide-svelte';
 
   type Tab = 'rules' | 'forwards' | 'ipsets' | 'zones';
   type Section = Record<string, string | string[] | boolean>;
@@ -19,7 +19,6 @@
   let ipsets = $state<Section[]>([]);
   let dhcpHosts = $state<{ name: string; ip: string; mac: string }[]>([]);
 
-  const conntrack = subscribe<{ count: number; max: number }>('firewall:conntrack');
 
   // Rule form
   let showRuleForm = $state(false);
@@ -219,22 +218,7 @@
 
 <div class="space-y-4">
   <div class="flex items-center justify-between">
-    <div>
-      <h1 class="text-2xl font-bold text-white">Firewall</h1>
-      <p class="text-sm text-[#8b949e]">{rules.length} rules &middot; {redirects.length} forwards &middot; {ipsets.length} IP sets</p>
-    </div>
-  </div>
-
-  <!-- Conntrack -->
-  <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-4">
-    <div class="flex items-center justify-between mb-2">
-      <span class="text-sm text-[#8b949e] flex items-center gap-2"><Activity size={15} /> Active Connections</span>
-      <span class="font-mono text-white font-semibold text-sm">{($conntrack?.count ?? 0).toLocaleString()} <span class="text-[#8b949e] font-normal">/ {($conntrack?.max ?? 0).toLocaleString()}</span></span>
-    </div>
-    <div class="w-full h-1.5 bg-[var(--color-surface-600)] rounded-full overflow-hidden">
-      <div class="h-full rounded-full bg-[var(--color-accent)] transition-all duration-500"
-        style="width: {Math.min(100, (($conntrack?.count ?? 0) / ($conntrack?.max || 1)) * 100)}%"></div>
-    </div>
+    <h1 class="text-2xl font-bold text-white">Firewall</h1>
   </div>
 
   <!-- Tabs -->
