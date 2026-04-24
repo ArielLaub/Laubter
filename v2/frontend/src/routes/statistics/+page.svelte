@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { subscribe } from '$lib/stores/websocket';
+  import { api } from '$lib/api/client';
   import uPlot from 'uplot';
   import { Cpu, HardDrive, Activity, Wifi } from 'lucide-svelte';
 
@@ -84,10 +85,26 @@
   }
 
   onMount(async () => {
+    // Load history from server (pre-collected while page was closed)
+    try {
+      const hist = await api<{ ts: number; cpu: number; memPercent: number; load1: number }[]>('/api/system/history');
+      if (hist.length > 0) {
+        timeBuf = hist.map(h => h.ts);
+        cpuBuf = hist.map(h => h.cpu);
+        memBuf = hist.map(h => h.memPercent);
+        loadBuf = hist.map(h => h.load1);
+        cpuHistory = [...cpuBuf];
+        memHistory = [...memBuf];
+      }
+    } catch { /* no history available */ }
+
     await tick();
-    if (cpuChartEl) cpuChart = new uPlot(makeOpts(cpuChartEl, 'CPU', '#006fff', '%', 100), [new Float64Array(0), new Float64Array(0)], cpuChartEl);
-    if (memChartEl) memChart = new uPlot(makeOpts(memChartEl, 'Memory', '#a78bfa', '%', 100), [new Float64Array(0), new Float64Array(0)], memChartEl);
-    if (loadChartEl) loadChart = new uPlot(makeOpts(loadChartEl, 'Load', '#22c55e', '', undefined), [new Float64Array(0), new Float64Array(0)], loadChartEl);
+    const initData = (buf1: number[], buf2: number[]): [Float64Array, Float64Array] => [
+      new Float64Array(timeBuf), new Float64Array(buf1.length ? buf1 : [0])
+    ];
+    if (cpuChartEl) cpuChart = new uPlot(makeOpts(cpuChartEl, 'CPU', '#006fff', '%', 100), [new Float64Array(timeBuf), new Float64Array(cpuBuf)], cpuChartEl);
+    if (memChartEl) memChart = new uPlot(makeOpts(memChartEl, 'Memory', '#a78bfa', '%', 100), [new Float64Array(timeBuf), new Float64Array(memBuf)], memChartEl);
+    if (loadChartEl) loadChart = new uPlot(makeOpts(loadChartEl, 'Load', '#22c55e', '', undefined), [new Float64Array(timeBuf), new Float64Array(loadBuf)], loadChartEl);
   });
 </script>
 
