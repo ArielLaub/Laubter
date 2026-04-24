@@ -18,11 +18,17 @@
   let meshNodes = $state(0);
   let dnsStats = $state<{ num_dns_queries?: number; num_blocked_filtering?: number } | null>(null);
 
-  // CPU history for sparkline
+  // CPU history for sparkline — use a buffer to avoid $effect loop
+  let cpuBuffer: number[] = [];
   let cpuHistory = $state<number[]>([]);
+  let lastCpu = $state<number | null>(null);
+
   $effect(() => {
-    if ($metrics?.cpu != null) {
-      cpuHistory = [...cpuHistory.slice(-59), $metrics.cpu];
+    const cpu = $metrics?.cpu;
+    if (cpu != null && cpu !== lastCpu) {
+      lastCpu = cpu;
+      cpuBuffer = [...cpuBuffer.slice(-59), cpu];
+      cpuHistory = cpuBuffer;
     }
   });
 
