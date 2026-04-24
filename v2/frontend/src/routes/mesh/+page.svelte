@@ -278,6 +278,10 @@
       nodes = result.nodes; clients = result.clients;
       ssid = data.info?.wl0_ssid ?? '';
       resolveClientNames();
+      // Select main node by default
+      if (!selectedNode && nodes.length > 0) {
+        selectedNode = nodes.find(n => n.isMainNode) ?? nodes[0];
+      }
     }
   });
 </script>
@@ -308,15 +312,16 @@
     </div>
   </div>
 
-  <!-- Topology tree -->
+  <!-- Topology + Detail split -->
   {#if nodes.length === 0}
     <div class="text-center py-16 text-[#8b949e]">
       <Wifi size={48} strokeWidth={1} class="mx-auto mb-4 opacity-30" />
       <p>No mesh nodes detected</p>
     </div>
   {:else if mainNode}
-    <div class="flex justify-center">
-      <div class="w-full max-w-3xl">
+    <div class="flex flex-col lg:flex-row gap-6">
+      <!-- Left: Topology tree -->
+      <div class="flex-1 min-w-0">
 
         {#snippet nodeCard(node: MeshNode, isMain: boolean)}
           {@const count = clientsForNode(node.mac)}
@@ -381,15 +386,11 @@
           {@render nodeTree(mainNode.mac)}
         </div>
       </div>
-    </div>
-  {/if}
-</div>
 
-<!-- Node detail panel -->
-{#if selectedNode}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50" onclick={() => selectedNode = null}></div>
-  <div class="fixed top-0 right-0 bottom-0 w-[420px] max-w-[90vw] bg-[var(--color-surface-900)] border-l border-[var(--color-surface-500)] z-50 flex flex-col" style="animation: slideIn 200ms ease-out">
+      <!-- Right: Detail panel (static, not modal) -->
+      <div class="w-full lg:w-[380px] flex-shrink-0">
+        {#if selectedNode}
+          <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl flex flex-col sticky top-4">
     <!-- Header -->
     <div class="flex items-center justify-between px-5 py-4 border-b border-[var(--color-surface-500)]">
       <div>
@@ -510,8 +511,17 @@
         </div>
       {/if}
     </div>
-  </div>
-{/if}
+          </div>
+        {:else}
+          <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-8 text-center text-[#8b949e] text-sm hidden lg:block">
+            <Router size={32} strokeWidth={1} class="mx-auto mb-3 opacity-30" />
+            <p>Select a node to view details</p>
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
+</div>
 
 <!-- Bind progress modal -->
 {#if bindLoading}
@@ -530,7 +540,6 @@
 {/if}
 
 <style>
-  @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
   @keyframes pulse { 0%, 100% { opacity: 0.7; transform: scale(1); } 50% { opacity: 1; transform: scale(1.05); } }
   .node-connector {
     position: relative;

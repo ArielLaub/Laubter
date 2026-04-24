@@ -135,7 +135,7 @@
           <Globe size={16} />Network
         </div>
       </div>
-      <div class="grid grid-cols-3 gap-3">
+      <div class="flex flex-wrap gap-x-6 gap-y-3">
         <div>
           <div class="text-xl font-bold text-white">{leaseCount}</div>
           <div class="text-[11px] text-[#8b949e]">Clients</div>
