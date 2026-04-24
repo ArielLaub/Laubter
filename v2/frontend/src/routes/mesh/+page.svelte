@@ -284,13 +284,13 @@
 
 <div class="space-y-6">
   <!-- Hero -->
-  <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-6 flex items-center justify-between">
+  <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-4 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
     <div class="flex items-center gap-4">
-      <div class="w-12 h-12 rounded-xl bg-[var(--color-accent-muted)] text-[var(--color-accent-light)] flex items-center justify-center">
+      <div class="w-12 h-12 rounded-xl bg-[var(--color-accent-muted)] text-[var(--color-accent-light)] flex items-center justify-center flex-shrink-0">
         <Wifi size={24} strokeWidth={1.75} />
       </div>
       <div>
-        <h1 class="text-2xl font-extrabold text-white tracking-tight">{ssid || 'Mesh Network'}</h1>
+        <h1 class="text-xl sm:text-2xl font-extrabold text-white tracking-tight">{ssid || 'Mesh Network'}</h1>
         <span class="text-sm text-[#8b949e]">ASUS AiMesh</span>
       </div>
     </div>
@@ -321,35 +321,37 @@
         {#snippet nodeCard(node: MeshNode, isMain: boolean)}
           {@const count = clientsForNode(node.mac)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer
+          <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 p-3 rounded-xl border transition-all cursor-pointer
             {isMain ? 'bg-gradient-to-r from-[var(--color-surface-800)] to-[rgba(0,111,255,0.06)] border-[var(--color-accent)]' : 'bg-[var(--color-surface-800)] border-[var(--color-surface-500)] hover:border-[var(--color-accent)]'}"
             onclick={() => { selectedNode = node; panelTab = 'clients'; }}>
-            <div class="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0
-              {node.online ? 'bg-[var(--color-accent-muted)] text-[var(--color-accent-light)]' : 'bg-[var(--color-surface-600)] text-[#8b949e]'}">
-              <Router size={isMain ? 22 : 18} strokeWidth={1.5} />
-            </div>
-            <div class="flex-1 min-w-0">
-              <div class="font-semibold text-white flex items-center gap-2 flex-wrap">
-                {node.alias}
-                {#if isMain}<span class="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--color-accent-muted)] text-[var(--color-accent-light)]">Primary</span>{/if}
-                {#if node.connectionQuality && node.backhaulType === 'wireless'}
-                  <span class="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded" style="background: color-mix(in srgb, {qualityColor(node.connectionQuality)} 15%, transparent); color: {qualityColor(node.connectionQuality)}">{qualityLabel(node.connectionQuality)}</span>
-                {/if}
+            <div class="flex items-center gap-3 min-w-0">
+              <div class="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0
+                {node.online ? 'bg-[var(--color-accent-muted)] text-[var(--color-accent-light)]' : 'bg-[var(--color-surface-600)] text-[#8b949e]'}">
+                <Router size={isMain ? 22 : 18} strokeWidth={1.5} />
               </div>
-              <div class="text-[11px] text-[#8b949e]">{node.model} &middot; <span class="font-mono">{node.ip}</span></div>
+              <div class="min-w-0">
+                <div class="font-semibold text-white flex items-center gap-2 flex-wrap">
+                  {node.alias}
+                  {#if isMain}<span class="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--color-accent-muted)] text-[var(--color-accent-light)]">Primary</span>{/if}
+                  {#if node.connectionQuality && node.backhaulType === 'wireless'}
+                    <span class="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded" style="background: color-mix(in srgb, {qualityColor(node.connectionQuality)} 15%, transparent); color: {qualityColor(node.connectionQuality)}">{qualityLabel(node.connectionQuality)}</span>
+                  {/if}
+                </div>
+                <div class="text-[11px] text-[#8b949e] truncate">{node.model} &middot; <span class="font-mono">{node.ip}</span></div>
+              </div>
             </div>
-            <div class="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+            <div class="flex items-center gap-1.5 flex-wrap sm:ml-auto sm:justify-end pl-13 sm:pl-0">
               {#each node.radios as radio}
                 <span class="text-[10px] font-semibold px-2 py-0.5 rounded-full" style="background: color-mix(in srgb, {bandColor(radio.band)} 15%, transparent); color: {bandColor(radio.band)}">{radio.band} {radio.clientCount}</span>
               {/each}
-              <span class="text-[11px] text-[#8b949e] ml-1"><Wifi size={11} class="inline" /> {count}</span>
+              <span class="text-[11px] text-[#8b949e]"><Wifi size={11} class="inline" /> {count}</span>
               {#if !isMain}
-                <span class="text-[10px] font-bold font-mono flex items-center gap-1 ml-1" style="color: {linkColor(node)}">
+                <span class="text-[10px] font-bold font-mono flex items-center gap-1" style="color: {linkColor(node)}">
                   {#if node.backhaulType === 'wireless'}<Wifi size={10} />{:else}<Cable size={10} />{/if}
                   {linkLabel(node)}
                 </span>
               {/if}
-              <ChevronRight size={14} class="text-[#8b949e] ml-1" />
+              <ChevronRight size={14} class="text-[#8b949e] hidden sm:block" />
             </div>
           </div>
         {/snippet}

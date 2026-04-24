@@ -179,7 +179,7 @@
 
 <div class="flex h-full">
   <!-- Main content -->
-  <div class="flex-1 space-y-4 overflow-y-auto" class:pr-[420px]={!!selectedClient}>
+  <div class="flex-1 space-y-4 overflow-y-auto" class:lg:pr-[420px]={!!selectedClient}>
     <div class="flex items-center justify-between">
       <div>
         <h1 class="text-2xl font-bold text-white">Clients</h1>
@@ -192,8 +192,8 @@
       <input type="text" bind:value={search} placeholder="Search by name, IP, or MAC..." class="flex-1 bg-transparent border-none outline-none text-white placeholder:text-[#8b949e]" />
     </div>
 
-    <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl overflow-hidden">
-      <table class="w-full text-sm">
+    <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl overflow-x-auto">
+      <table class="w-full text-sm min-w-[500px]">
         <thead>
           <tr class="border-b border-[var(--color-surface-500)]">
             <th class="text-left px-4 py-3 text-[11px] font-semibold text-[#8b949e] uppercase tracking-wider cursor-pointer select-none" onclick={() => toggleSort('hostname')}>
@@ -202,7 +202,7 @@
             <th class="text-left px-4 py-3 text-[11px] font-semibold text-[#8b949e] uppercase tracking-wider cursor-pointer select-none" onclick={() => toggleSort('ip')}>
               IP{sortArrow('ip')}
             </th>
-            <th class="text-left px-4 py-3 text-[11px] font-semibold text-[#8b949e] uppercase tracking-wider">MAC</th>
+            <th class="text-left px-4 py-3 text-[11px] font-semibold text-[#8b949e] uppercase tracking-wider hidden md:table-cell">MAC</th>
             <th class="text-right px-4 py-3 text-[11px] font-semibold text-[#8b949e] uppercase tracking-wider cursor-pointer select-none" onclick={() => toggleSort('rx')}>
               <span class="inline-flex items-center gap-1"><ArrowDown size={11} />DL{sortArrow('rx')}</span>
             </th>
@@ -219,7 +219,7 @@
                 <div class="font-medium text-white">{client.hostname || '(unknown)'}</div>
               </td>
               <td class="px-4 py-3 font-mono text-xs text-[#c9d1d9]">{client.ip}</td>
-              <td class="px-4 py-3 font-mono text-xs text-[#8b949e]">{client.mac?.toLowerCase()}</td>
+              <td class="px-4 py-3 font-mono text-xs text-[#8b949e] hidden md:table-cell">{client.mac?.toLowerCase()}</td>
               <td class="px-4 py-3 text-right font-mono text-xs text-[#58a6ff]">{formatBytes(client.rx)}</td>
               <td class="px-4 py-3 text-right font-mono text-xs text-[var(--color-success)]">{formatBytes(client.tx)}</td>
             </tr>
@@ -233,7 +233,7 @@
 
   <!-- Detail sidebar -->
   {#if selectedClient}
-    <div class="fixed top-0 right-0 bottom-0 w-[400px] bg-[var(--color-surface-900)] border-l border-[var(--color-surface-500)] z-40 flex flex-col animate-slide-in">
+    <div class="fixed top-0 right-0 bottom-0 w-full sm:w-[400px] bg-[var(--color-surface-900)] border-l border-[var(--color-surface-500)] z-40 flex flex-col animate-slide-in">
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-4 border-b border-[var(--color-surface-500)]">
         <div>

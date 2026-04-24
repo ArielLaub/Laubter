@@ -180,7 +180,7 @@
   <h1 class="text-2xl font-bold text-white">DHCP & DNS</h1>
 
   <!-- Tabs -->
-  <div class="flex gap-0 border-b-2 border-[var(--color-surface-500)]">
+  <div class="flex gap-0 border-b-2 border-[var(--color-surface-500)] overflow-x-auto">
     {#each [
       { id: 'leases', label: 'Active Leases', count: leases.length },
       { id: 'hosts', label: 'Static Leases', count: hosts.length },
@@ -251,7 +251,7 @@
       {#if showHostForm}
         <div class="p-5 border-b border-[var(--color-surface-500)] bg-[var(--color-surface-700)]/50">
           <h3 class="text-sm font-semibold text-[#c9d1d9] mb-3">{editingHost ? 'Edit' : 'New'} Static Lease</h3>
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             <div><label class={label}>Hostname</label><input class={input} bind:value={hostForm.name} placeholder="e.g. my-device" /></div>
             <div><label class={label}>MAC Address</label><input class="{input} font-mono text-xs" bind:value={hostForm.mac} placeholder="AA:BB:CC:DD:EE:FF" /></div>
             <div><label class={label}>IP Address</label><input class="{input} font-mono text-xs" bind:value={hostForm.ip} placeholder="192.168.50.100" /></div>
@@ -372,7 +372,7 @@
             {#if pool.dhcpv6 === 'server'}<span class="text-[9px] px-1.5 py-0.5 rounded bg-[rgba(139,92,246,0.15)] text-[#a78bfa]">DHCPv6</span>{/if}
             {#if pool.ra === 'server'}<span class="text-[9px] px-1.5 py-0.5 rounded bg-[rgba(34,197,94,0.15)] text-[#22c55e]">RA</span>{/if}
           </div>
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div>
               <label class={label}>Start Address</label>
               <input class="{input} font-mono text-xs" value={pool.start}
@@ -422,7 +422,7 @@
   {:else if activeTab === 'settings'}
     <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5 space-y-4">
       <h2 class="text-sm font-semibold text-white">dnsmasq Configuration</h2>
-      <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <div>
           <label class={label}>Local Domain</label>
           <input class={input} value={dnsmasq.domain ?? 'lan'}
@@ -482,7 +482,7 @@
 
 <!-- Apply bar -->
 {#if dirty}
-  <div class="fixed bottom-0 left-56 right-0 bg-[var(--color-surface-800)] border-t border-[var(--color-surface-500)] px-6 py-3 flex items-center justify-between z-30">
+  <div class="fixed bottom-0 left-0 lg:left-56 right-0 bg-[var(--color-surface-800)] border-t border-[var(--color-surface-500)] px-4 lg:px-6 py-3 flex items-center justify-between z-30">
     <span class="text-sm text-[#8b949e]">You have unsaved DHCP changes</span>
     <div class="flex gap-2">
       <button class={btnSecondary} onclick={revertChanges}>Discard</button>

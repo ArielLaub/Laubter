@@ -222,7 +222,7 @@
   </div>
 
   <!-- Tabs -->
-  <div class="flex gap-0 border-b-2 border-[var(--color-surface-500)]">
+  <div class="flex gap-0 border-b-2 border-[var(--color-surface-500)] overflow-x-auto">
     {#each [
       { id: 'rules', label: 'Traffic Rules', count: rules.length },
       { id: 'forwards', label: 'Port Forwards', count: redirects.length },
@@ -248,7 +248,7 @@
       {#if showRuleForm}
         <div class="p-5 border-b border-[var(--color-surface-500)] bg-[var(--color-surface-700)]/50">
           <h3 class="text-sm font-semibold text-[#c9d1d9] mb-4">{editingSection ? 'Edit Rule' : 'New Rule'}</h3>
-          <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             <div><label class={label}>Name</label><input class={input} bind:value={ruleForm.name} placeholder="e.g. Block IoT Internet" /></div>
             <div>
               <label class={label}>Action</label>
@@ -363,7 +363,7 @@
 
       {#if showFwdForm}
         <div class="p-5 border-b border-[var(--color-surface-500)] bg-[var(--color-surface-700)]/50">
-          <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             <div><label class={label}>Name</label><input class={input} bind:value={fwdForm.name} placeholder="e.g. Home Assistant" /></div>
             <div>
               <label class={label}>Protocol</label>
@@ -545,7 +545,7 @@
 
 <!-- Apply bar -->
 {#if dirty}
-  <div class="fixed bottom-0 left-56 right-0 bg-[var(--color-surface-800)] border-t border-[var(--color-surface-500)] px-6 py-3 flex items-center justify-between z-30">
+  <div class="fixed bottom-0 left-0 lg:left-56 right-0 bg-[var(--color-surface-800)] border-t border-[var(--color-surface-500)] px-4 lg:px-6 py-3 flex items-center justify-between z-30">
     <span class="text-sm text-[#8b949e]">You have unsaved changes</span>
     <div class="flex gap-2">
       <button class={btnSecondary} onclick={revertChanges}>Discard</button>
