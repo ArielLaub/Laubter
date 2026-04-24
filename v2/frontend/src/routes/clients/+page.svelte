@@ -219,7 +219,7 @@
                 <div class="font-medium text-white">{client.hostname || '(unknown)'}</div>
               </td>
               <td class="px-4 py-3 font-mono text-xs text-[#c9d1d9]">{client.ip}</td>
-              <td class="px-4 py-3 font-mono text-xs text-[#8b949e]">{client.mac?.toUpperCase()}</td>
+              <td class="px-4 py-3 font-mono text-xs text-[#8b949e]">{client.mac?.toLowerCase()}</td>
               <td class="px-4 py-3 text-right font-mono text-xs text-[#58a6ff]">{formatBytes(client.rx)}</td>
               <td class="px-4 py-3 text-right font-mono text-xs text-[var(--color-success)]">{formatBytes(client.tx)}</td>
             </tr>
@@ -276,7 +276,7 @@
         <!-- Details -->
         <div class="space-y-0">
           {#each [
-            { l: 'MAC Address', v: selectedClient.mac?.toUpperCase() },
+            { l: 'MAC Address', v: selectedClient.mac?.toLowerCase() },
             { l: 'IP Address', v: selectedClient.ip },
             { l: 'Hostname', v: selectedClient.hostname || '(unknown)' },
             { l: 'Connections', v: String(selectedClient.conns) },
