@@ -11,6 +11,18 @@
     return bytesPerSec.toFixed(0) + ' B/s';
   }
 
+  function fmtRateVal(b: number): string {
+    if (b >= 1e6) return (b / 1e6).toFixed(1);
+    if (b >= 1e3) return (b / 1e3).toFixed(0);
+    return b.toFixed(0);
+  }
+
+  function fmtRateUnit(b: number): string {
+    if (b >= 1e6) return 'MB/s';
+    if (b >= 1e3) return 'KB/s';
+    return 'B/s';
+  }
+
   // Live metrics
   const metrics = subscribe<{
     cpu: number;
@@ -29,6 +41,8 @@
   let memBuf: number[] = [];
   let rxBuf: number[] = [];
   let txBuf: number[] = [];
+  let tempBuf: number[] = [];
+  let connsBuf: number[] = [];
   let timeBuf: number[] = [];
 
   let cpuHistory = $state<number[]>([]);
@@ -37,9 +51,11 @@
   // Charts
   let cpuChartEl = $state<HTMLDivElement | null>(null);
   let memChartEl = $state<HTMLDivElement | null>(null);
+  let tempChartEl = $state<HTMLDivElement | null>(null);
   let netChartEl = $state<HTMLDivElement | null>(null);
   let cpuChart: uPlot | null = null;
   let memChart: uPlot | null = null;
+  let tempChart: uPlot | null = null;
   let netChart: uPlot | null = null;
 
   let lastMetricTs = 0;
@@ -56,6 +72,8 @@
     memBuf.push(m.memory.percent);
     rxBuf.push(m.rxRate ?? 0);
     txBuf.push(m.txRate ?? 0);
+    tempBuf.push(m.temp ?? 0);
+    connsBuf.push(m.conns ?? 0);
 
     if (timeBuf.length > MAX) {
       timeBuf = timeBuf.slice(-MAX);
@@ -63,6 +81,8 @@
       memBuf = memBuf.slice(-MAX);
       rxBuf = rxBuf.slice(-MAX);
       txBuf = txBuf.slice(-MAX);
+      tempBuf = tempBuf.slice(-MAX);
+      connsBuf = connsBuf.slice(-MAX);
     }
 
     cpuHistory = [...cpuBuf];
@@ -70,6 +90,7 @@
 
     if (cpuChart) cpuChart.setData([new Float64Array(timeBuf), new Float64Array(cpuBuf)]);
     if (memChart) memChart.setData([new Float64Array(timeBuf), new Float64Array(memBuf)]);
+    if (tempChart) tempChart.setData([new Float64Array(timeBuf), new Float64Array(tempBuf)]);
     if (netChart) netChart.setData([new Float64Array(timeBuf), new Float64Array(rxBuf), new Float64Array(txBuf)]);
   });
 
@@ -100,13 +121,15 @@
   onMount(async () => {
     // Load history from server (pre-collected while page was closed)
     try {
-      const hist = await api<{ ts: number; cpu: number; memPercent: number; rxRate: number; txRate: number }[]>('/api/system/history');
+      const hist = await api<{ ts: number; cpu: number; memPercent: number; rxRate: number; txRate: number; temp: number; conns: number }[]>('/api/system/history');
       if (hist.length > 0) {
         timeBuf = hist.map(h => h.ts);
         cpuBuf = hist.map(h => h.cpu);
         memBuf = hist.map(h => h.memPercent);
         rxBuf = hist.map(h => h.rxRate ?? 0);
         txBuf = hist.map(h => h.txRate ?? 0);
+        tempBuf = hist.map(h => h.temp ?? 0);
+        connsBuf = hist.map(h => h.conns ?? 0);
         cpuHistory = [...cpuBuf];
         memHistory = [...memBuf];
       }
@@ -118,6 +141,7 @@
     await new Promise(r => requestAnimationFrame(r));
     if (cpuChartEl) cpuChart = new uPlot(makeOpts(cpuChartEl, 'CPU', '#006fff', '%', 100), [new Float64Array(timeBuf), new Float64Array(cpuBuf)], cpuChartEl);
     if (memChartEl) memChart = new uPlot(makeOpts(memChartEl, 'Memory', '#a78bfa', '%', 100), [new Float64Array(timeBuf), new Float64Array(memBuf)], memChartEl);
+    if (tempChartEl) tempChart = new uPlot(makeOpts(tempChartEl, 'Temp', '#f59e0b', '°C', undefined), [new Float64Array(timeBuf), new Float64Array(tempBuf)], tempChartEl);
     if (netChartEl) {
       const netOpts: uPlot.Options = {
         width: netChartEl.clientWidth, height: 160,
@@ -169,11 +193,13 @@
       <div class="text-[11px] text-[#8b949e] uppercase mt-1 flex items-center justify-center gap-1"><HardDrive size={12} /> Memory</div>
     </div>
     <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-4 text-center">
-      <div class="text-3xl font-extrabold font-mono text-[#58a6ff]">{formatRate($metrics?.rxRate ?? 0)}</div>
+      <div class="text-3xl font-extrabold font-mono text-[#58a6ff]">{fmtRateVal($metrics?.rxRate ?? 0)}</div>
+      <div class="text-[10px] text-[#58a6ff]/60 font-mono">{fmtRateUnit($metrics?.rxRate ?? 0)}</div>
       <div class="text-[11px] text-[#8b949e] uppercase mt-1 flex items-center justify-center gap-1"><Activity size={12} /> Download</div>
     </div>
     <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-4 text-center">
-      <div class="text-3xl font-extrabold font-mono text-[#22c55e]">{formatRate($metrics?.txRate ?? 0)}</div>
+      <div class="text-3xl font-extrabold font-mono text-[#22c55e]">{fmtRateVal($metrics?.txRate ?? 0)}</div>
+      <div class="text-[10px] text-[#22c55e]/60 font-mono">{fmtRateUnit($metrics?.txRate ?? 0)}</div>
       <div class="text-[11px] text-[#8b949e] uppercase mt-1 flex items-center justify-center gap-1"><Activity size={12} /> Upload</div>
     </div>
     <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-4 text-center">
@@ -199,15 +225,26 @@
     </div>
   </div>
 
-  <!-- Network throughput chart (full width) -->
-  <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5">
-    <div class="flex items-center justify-between mb-3">
-      <div class="flex items-center gap-2 text-sm text-[#8b949e]"><Activity size={15} /> Network Throughput</div>
-      <div class="flex items-center gap-4 text-[10px]">
-        <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-[#58a6ff]"></span> Download</span>
-        <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-[#22c55e]"></span> Upload</span>
+  <!-- Temperature + Network in 2-col grid -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5">
+      <div class="flex items-center gap-2 text-sm text-[#8b949e] mb-3">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
+        Temperature
       </div>
+      <div bind:this={tempChartEl}></div>
     </div>
-    <div bind:this={netChartEl}></div>
+
+    <!-- Network throughput chart -->
+    <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2 text-sm text-[#8b949e]"><Activity size={15} /> Network Throughput</div>
+        <div class="flex items-center gap-4 text-[10px]">
+          <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-[#58a6ff]"></span> Download</span>
+          <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-[#22c55e]"></span> Upload</span>
+        </div>
+      </div>
+      <div bind:this={netChartEl}></div>
+    </div>
   </div>
 </div>
