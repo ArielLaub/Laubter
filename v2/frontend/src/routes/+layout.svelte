@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { init, connected } from '$lib/stores/websocket';
   import { onMount } from 'svelte';
-  import { LayoutDashboard, Wifi, Users, Shield, ShieldCheck, Lock, Settings, Server, Menu, X, BarChart3 } from 'lucide-svelte';
+  import { LayoutDashboard, Wifi, Users, Shield, ShieldCheck, Lock, Settings, Server, Menu, X, BarChart3, ScrollText } from 'lucide-svelte';
 
   let { children } = $props();
   let mobileOpen = $state(false);
@@ -19,6 +19,7 @@
     { href: '/adguard', label: 'AdGuard DNS', icon: ShieldCheck },
     { href: '/firewall', label: 'Firewall', icon: Shield },
     { href: '/vpn', label: 'VPN', icon: Lock },
+    { href: '/log', label: 'System Log', icon: ScrollText },
     { href: '/settings', label: 'Settings', icon: Settings },
   ];
 

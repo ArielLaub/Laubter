@@ -16,8 +16,46 @@ interface MetricPoint {
   ts: number;
   cpu: number;
   memPercent: number;
-  load1: number;
+  rxRate: number;
+  txRate: number;
+  temp: number;
+  conns: number;
   uptime: number;
+}
+
+// Network byte counters for rate calculation
+let prevRxBytes = 0;
+let prevTxBytes = 0;
+let prevNetTs = 0;
+
+async function getTemperature(): Promise<number> {
+  try {
+    // Try thermal zones
+    const temp = await readFile('/sys/class/thermal/thermal_zone0/temp', 'utf-8');
+    return parseInt(temp.trim()) / 1000; // millidegrees to degrees
+  } catch {
+    return 0;
+  }
+}
+
+async function getConntrack(): Promise<number> {
+  try {
+    const count = await readFile('/proc/sys/net/netfilter/nf_conntrack_count', 'utf-8');
+    return parseInt(count.trim());
+  } catch {
+    return 0;
+  }
+}
+
+async function getNetBytes(): Promise<{ rx: number; tx: number }> {
+  try {
+    // Read WAN interface (eth1) or fallback to br-lan
+    const rx = parseInt(await readFile('/sys/class/net/eth1/statistics/rx_bytes', 'utf-8').catch(() => readFile('/sys/class/net/br-lan/statistics/rx_bytes', 'utf-8')));
+    const tx = parseInt(await readFile('/sys/class/net/eth1/statistics/tx_bytes', 'utf-8').catch(() => readFile('/sys/class/net/br-lan/statistics/tx_bytes', 'utf-8')));
+    return { rx: rx || 0, tx: tx || 0 };
+  } catch {
+    return { rx: 0, tx: 0 };
+  }
 }
 
 let prevCpu: CpuSample | null = null;
@@ -69,23 +107,39 @@ async function getLoadAvg(): Promise<number[]> {
 }
 
 async function collectMetrics() {
-  const [mem, uptime, load] = await Promise.all([getMemory(), getUptime(), getLoadAvg()]);
+  const [mem, uptime, load, net, temp, conns] = await Promise.all([getMemory(), getUptime(), getLoadAvg(), getNetBytes(), getTemperature(), getConntrack()]);
   const cpu = await readCpuSample();
   const usage = prevCpu ? cpuUsage(prevCpu, cpu) : 0;
   prevCpu = cpu;
 
+  const now = Date.now() / 1000;
+  let rxRate = 0, txRate = 0;
+  if (prevNetTs > 0 && prevRxBytes > 0) {
+    const dt = now - prevNetTs;
+    if (dt > 0 && dt < 30) {
+      rxRate = Math.max(0, (net.rx - prevRxBytes) / dt);
+      txRate = Math.max(0, (net.tx - prevTxBytes) / dt);
+    }
+  }
+  prevRxBytes = net.rx;
+  prevTxBytes = net.tx;
+  prevNetTs = now;
+
   const point: MetricPoint = {
-    ts: Date.now() / 1000,
+    ts: now,
     cpu: usage,
     memPercent: mem.percent,
-    load1: load[0],
+    rxRate,
+    txRate,
+    temp,
+    conns,
     uptime: uptime.uptime
   };
 
   history.push(point);
   if (history.length > HISTORY_MAX) history.splice(0, history.length - HISTORY_MAX);
 
-  return { cpu: usage, memory: mem, uptime: uptime.uptime, load };
+  return { cpu: usage, memory: mem, uptime: uptime.uptime, load, rxRate, txRate, temp, conns };
 }
 
 const plugin: Plugin = {
@@ -108,6 +162,22 @@ const plugin: Plugin = {
         {
           method: 'GET', path: '/api/system/history',
           handler: async (_req, res) => sendJson(res, 200, history)
+        },
+        {
+          method: 'GET', path: '/api/system/log',
+          handler: async (_req, res) => {
+            const { execFile } = await import('node:child_process');
+            const { promisify } = await import('node:util');
+            const exec = promisify(execFile);
+            try {
+              const { stdout } = await exec('logread', [], { timeout: 5000, maxBuffer: 2 * 1024 * 1024 });
+              const lines = stdout.trim().split('\n').filter(Boolean);
+              // Return last 500 lines
+              sendJson(res, 200, lines.slice(-500));
+            } catch {
+              sendJson(res, 200, []);
+            }
+          }
         }
       ],
 

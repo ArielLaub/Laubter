@@ -3,7 +3,13 @@
   import { subscribe } from '$lib/stores/websocket';
   import { api } from '$lib/api/client';
   import uPlot from 'uplot';
-  import { Cpu, HardDrive, Activity, Wifi } from 'lucide-svelte';
+  import { Cpu, HardDrive, Activity } from 'lucide-svelte';
+
+  function formatRate(bytesPerSec: number): string {
+    if (bytesPerSec >= 1e6) return (bytesPerSec / 1e6).toFixed(1) + ' MB/s';
+    if (bytesPerSec >= 1e3) return (bytesPerSec / 1e3).toFixed(0) + ' KB/s';
+    return bytesPerSec.toFixed(0) + ' B/s';
+  }
 
   // Live metrics
   const metrics = subscribe<{
@@ -11,13 +17,18 @@
     memory: { total: number; used: number; percent: number };
     uptime: number;
     load: number[];
+    rxRate: number;
+    txRate: number;
+    temp: number;
+    conns: number;
   }>('system:metrics');
 
   // History buffers
-  const MAX = 120; // 4 minutes at 2s intervals
+  const MAX = 300;
   let cpuBuf: number[] = [];
   let memBuf: number[] = [];
-  let loadBuf: number[] = [];
+  let rxBuf: number[] = [];
+  let txBuf: number[] = [];
   let timeBuf: number[] = [];
 
   let cpuHistory = $state<number[]>([]);
@@ -26,10 +37,10 @@
   // Charts
   let cpuChartEl = $state<HTMLDivElement | null>(null);
   let memChartEl = $state<HTMLDivElement | null>(null);
-  let loadChartEl = $state<HTMLDivElement | null>(null);
+  let netChartEl = $state<HTMLDivElement | null>(null);
   let cpuChart: uPlot | null = null;
   let memChart: uPlot | null = null;
-  let loadChart: uPlot | null = null;
+  let netChart: uPlot | null = null;
 
   let lastMetricTs = 0;
 
@@ -43,13 +54,15 @@
     timeBuf.push(now);
     cpuBuf.push(m.cpu);
     memBuf.push(m.memory.percent);
-    loadBuf.push(m.load[0]);
+    rxBuf.push(m.rxRate ?? 0);
+    txBuf.push(m.txRate ?? 0);
 
     if (timeBuf.length > MAX) {
       timeBuf = timeBuf.slice(-MAX);
       cpuBuf = cpuBuf.slice(-MAX);
       memBuf = memBuf.slice(-MAX);
-      loadBuf = loadBuf.slice(-MAX);
+      rxBuf = rxBuf.slice(-MAX);
+      txBuf = txBuf.slice(-MAX);
     }
 
     cpuHistory = [...cpuBuf];
@@ -57,7 +70,7 @@
 
     if (cpuChart) cpuChart.setData([new Float64Array(timeBuf), new Float64Array(cpuBuf)]);
     if (memChart) memChart.setData([new Float64Array(timeBuf), new Float64Array(memBuf)]);
-    if (loadChart) loadChart.setData([new Float64Array(timeBuf), new Float64Array(loadBuf)]);
+    if (netChart) netChart.setData([new Float64Array(timeBuf), new Float64Array(rxBuf), new Float64Array(txBuf)]);
   });
 
   function makeOpts(el: HTMLDivElement, label: string, color: string, unit: string, max?: number): uPlot.Options {
@@ -87,24 +100,51 @@
   onMount(async () => {
     // Load history from server (pre-collected while page was closed)
     try {
-      const hist = await api<{ ts: number; cpu: number; memPercent: number; load1: number }[]>('/api/system/history');
+      const hist = await api<{ ts: number; cpu: number; memPercent: number; rxRate: number; txRate: number }[]>('/api/system/history');
       if (hist.length > 0) {
         timeBuf = hist.map(h => h.ts);
         cpuBuf = hist.map(h => h.cpu);
         memBuf = hist.map(h => h.memPercent);
-        loadBuf = hist.map(h => h.load1);
+        rxBuf = hist.map(h => h.rxRate ?? 0);
+        txBuf = hist.map(h => h.txRate ?? 0);
         cpuHistory = [...cpuBuf];
         memHistory = [...memBuf];
       }
     } catch { /* no history available */ }
 
+    // Wait for DOM layout to settle
     await tick();
-    const initData = (buf1: number[], buf2: number[]): [Float64Array, Float64Array] => [
-      new Float64Array(timeBuf), new Float64Array(buf1.length ? buf1 : [0])
-    ];
+    await new Promise(r => requestAnimationFrame(r));
+    await new Promise(r => requestAnimationFrame(r));
     if (cpuChartEl) cpuChart = new uPlot(makeOpts(cpuChartEl, 'CPU', '#006fff', '%', 100), [new Float64Array(timeBuf), new Float64Array(cpuBuf)], cpuChartEl);
     if (memChartEl) memChart = new uPlot(makeOpts(memChartEl, 'Memory', '#a78bfa', '%', 100), [new Float64Array(timeBuf), new Float64Array(memBuf)], memChartEl);
-    if (loadChartEl) loadChart = new uPlot(makeOpts(loadChartEl, 'Load', '#22c55e', '', undefined), [new Float64Array(timeBuf), new Float64Array(loadBuf)], loadChartEl);
+    if (netChartEl) {
+      const netOpts: uPlot.Options = {
+        width: netChartEl.clientWidth, height: 160,
+        cursor: { show: true }, legend: { show: false },
+        axes: [
+          { show: false },
+          {
+            stroke: '#8b949e', size: 55,
+            grid: { stroke: 'rgba(255,255,255,0.04)', width: 1 },
+            ticks: { show: false },
+            values: (_u: uPlot, vals: number[]) => vals.map(v => {
+              if (v >= 1e6) return (v / 1e6).toFixed(1) + ' MB/s';
+              if (v >= 1e3) return (v / 1e3).toFixed(0) + ' KB/s';
+              return v.toFixed(0) + ' B/s';
+            }),
+            font: '10px monospace',
+          }
+        ],
+        scales: { x: { time: false }, y: { min: 0 } },
+        series: [
+          {},
+          { label: 'Download', stroke: '#58a6ff', fill: 'rgba(88,166,255,0.1)', width: 2 },
+          { label: 'Upload', stroke: '#22c55e', fill: 'rgba(34,197,94,0.1)', width: 2 }
+        ]
+      };
+      netChart = new uPlot(netOpts, [new Float64Array(timeBuf), new Float64Array(rxBuf), new Float64Array(txBuf)], netChartEl);
+    }
   });
 </script>
 
@@ -119,7 +159,7 @@
   </div>
 
   <!-- Live values row -->
-  <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
     <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-4 text-center">
       <div class="text-3xl font-extrabold font-mono text-[#006fff]">{$metrics?.cpu ?? 0}%</div>
       <div class="text-[11px] text-[#8b949e] uppercase mt-1 flex items-center justify-center gap-1"><Cpu size={12} /> CPU</div>
@@ -129,30 +169,45 @@
       <div class="text-[11px] text-[#8b949e] uppercase mt-1 flex items-center justify-center gap-1"><HardDrive size={12} /> Memory</div>
     </div>
     <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-4 text-center">
-      <div class="text-3xl font-extrabold font-mono text-[#22c55e]">{$metrics?.load?.[0]?.toFixed(2) ?? '0'}</div>
-      <div class="text-[11px] text-[#8b949e] uppercase mt-1 flex items-center justify-center gap-1"><Activity size={12} /> Load</div>
+      <div class="text-3xl font-extrabold font-mono text-[#58a6ff]">{formatRate($metrics?.rxRate ?? 0)}</div>
+      <div class="text-[11px] text-[#8b949e] uppercase mt-1 flex items-center justify-center gap-1"><Activity size={12} /> Download</div>
     </div>
     <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-4 text-center">
-      <div class="text-3xl font-extrabold font-mono text-white">{cpuHistory.length}</div>
-      <div class="text-[11px] text-[#8b949e] uppercase mt-1">Samples</div>
+      <div class="text-3xl font-extrabold font-mono text-[#22c55e]">{formatRate($metrics?.txRate ?? 0)}</div>
+      <div class="text-[11px] text-[#8b949e] uppercase mt-1 flex items-center justify-center gap-1"><Activity size={12} /> Upload</div>
+    </div>
+    <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-4 text-center">
+      <div class="text-3xl font-extrabold font-mono {($metrics?.temp ?? 0) > 70 ? 'text-[#ef4444]' : ($metrics?.temp ?? 0) > 55 ? 'text-[#f59e0b]' : 'text-[#22c55e]'}">{$metrics?.temp?.toFixed(1) ?? '0'}&deg;</div>
+      <div class="text-[11px] text-[#8b949e] uppercase mt-1">Temperature</div>
+    </div>
+    <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-4 text-center">
+      <div class="text-3xl font-extrabold font-mono text-white">{($metrics?.conns ?? 0).toLocaleString()}</div>
+      <div class="text-[11px] text-[#8b949e] uppercase mt-1">Connections</div>
     </div>
   </div>
 
-  <!-- CPU chart -->
-  <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5">
-    <div class="flex items-center gap-2 text-sm text-[#8b949e] mb-3"><Cpu size={15} /> CPU Usage</div>
-    <div bind:this={cpuChartEl}></div>
+  <!-- Charts: 2 per row on desktop -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5">
+      <div class="flex items-center gap-2 text-sm text-[#8b949e] mb-3"><Cpu size={15} /> CPU Usage</div>
+      <div bind:this={cpuChartEl}></div>
+    </div>
+
+    <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5">
+      <div class="flex items-center gap-2 text-sm text-[#8b949e] mb-3"><HardDrive size={15} /> Memory Usage</div>
+      <div bind:this={memChartEl}></div>
+    </div>
   </div>
 
-  <!-- Memory chart -->
+  <!-- Network throughput chart (full width) -->
   <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5">
-    <div class="flex items-center gap-2 text-sm text-[#8b949e] mb-3"><HardDrive size={15} /> Memory Usage</div>
-    <div bind:this={memChartEl}></div>
-  </div>
-
-  <!-- Load chart -->
-  <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5">
-    <div class="flex items-center gap-2 text-sm text-[#8b949e] mb-3"><Activity size={15} /> System Load</div>
-    <div bind:this={loadChartEl}></div>
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-2 text-sm text-[#8b949e]"><Activity size={15} /> Network Throughput</div>
+      <div class="flex items-center gap-4 text-[10px]">
+        <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-[#58a6ff]"></span> Download</span>
+        <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-[#22c55e]"></span> Upload</span>
+      </div>
+    </div>
+    <div bind:this={netChartEl}></div>
   </div>
 </div>
