@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { init, connected } from '$lib/stores/websocket';
   import { onMount } from 'svelte';
-  import { LayoutDashboard, Wifi, Users, Shield, Settings } from 'lucide-svelte';
+  import { LayoutDashboard, Wifi, Users, Shield, Settings, Server } from 'lucide-svelte';
 
   let { children } = $props();
 
@@ -13,6 +13,7 @@
     { href: '/', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/mesh', label: 'WiFi Mesh', icon: Wifi },
     { href: '/clients', label: 'Clients', icon: Users },
+    { href: '/dhcp', label: 'DHCP & DNS', icon: Server },
     { href: '/firewall', label: 'Firewall', icon: Shield },
     { href: '/settings', label: 'Settings', icon: Settings },
   ];
