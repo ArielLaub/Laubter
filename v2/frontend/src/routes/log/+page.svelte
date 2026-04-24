@@ -86,9 +86,8 @@
           {#each filtered as line, i}
             {@const parsed = parseTimestamp(line)}
             <tr class="border-b border-[var(--color-surface-600)]/30 hover:bg-white/[0.02]">
-              <td class="px-3 py-1.5 text-[11px] text-[#8b949e] whitespace-nowrap align-top select-none w-0">{i + 1}</td>
               {#if parsed.time}
-                <td class="px-2 py-1.5 text-[12px] text-[#6e7681] whitespace-nowrap align-top w-0">{parsed.time.split(' ').slice(2, 4).join(' ')}</td>
+                <td class="px-3 py-1.5 text-[12px] text-[#6e7681] whitespace-nowrap align-top w-0">{parsed.time.split(' ').slice(2, 4).join(' ')}</td>
               {/if}
               <td class="px-3 py-1.5 text-[13px] leading-relaxed {lineClass(line)} break-all">{parsed.rest || line}</td>
             </tr>
