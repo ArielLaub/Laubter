@@ -11,7 +11,7 @@
 
   const nav = [
     { href: '/', label: 'Dashboard', icon: LayoutDashboard },
-    { href: '/mesh', label: 'WiFi Mesh', icon: Wifi },
+    { href: '/mesh', label: 'ASUS AiMesh', icon: Wifi },
     { href: '/clients', label: 'Clients', icon: Users },
     { href: '/dhcp', label: 'DHCP & DNS', icon: Server },
     { href: '/firewall', label: 'Firewall', icon: Shield },
