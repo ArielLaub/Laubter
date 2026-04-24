@@ -113,5 +113,20 @@ export class PluginLoader {
     this.collectorTimers = [];
   }
 
+  /** Register a plugin that was loaded externally (e.g. bundled imports) */
+  registerPlugin(plugin: Plugin, registration: PluginRegistration): void {
+    this.loaded.set(plugin.manifest.name, { plugin, registration });
+
+    // Start collectors
+    for (const collector of registration.collectors ?? []) {
+      const timer = setInterval(async () => {
+        try { await collector.run(); } catch (err) {
+          console.error(`[${plugin.manifest.name}] collector ${collector.name} error:`, err);
+        }
+      }, collector.interval);
+      this.collectorTimers.push(timer);
+    }
+  }
+
   get plugins(): Map<string, LoadedPlugin> { return this.loaded; }
 }

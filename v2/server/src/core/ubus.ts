@@ -1,9 +1,15 @@
 /**
- * UbusClient — talks to rpcd's JSON-RPC endpoint over HTTP.
+ * UbusClient — calls ubus methods.
  *
- * Uses the same protocol the v1 frontend uses, but server-to-server on localhost.
- * No native dependencies, pure TypeScript.
+ * Two modes:
+ * - CLI mode (default on router): shells out to `ubus call` — no auth needed, runs as root
+ * - HTTP mode (for remote dev): JSON-RPC to rpcd endpoint — needs session auth
  */
+
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const exec = promisify(execFile);
 
 interface UbusResponse<T = unknown> {
   jsonrpc: '2.0';
@@ -13,30 +19,36 @@ interface UbusResponse<T = unknown> {
 }
 
 export interface UbusClientOptions {
-  url: string; // e.g. 'http://127.0.0.1/ubus' (LuCI rpcd) or 'http://127.0.0.1:3000/ubus'
+  /** 'cli' = use `ubus call` (local, no auth). 'http' = JSON-RPC to rpcd. */
+  mode?: 'cli' | 'http';
+  /** For HTTP mode: rpcd endpoint URL */
+  url?: string;
   username?: string;
   password?: string;
-  timeout?: number; // ms
+  timeout?: number;
 }
 
 export class UbusClient {
+  private mode: 'cli' | 'http';
   private url: string;
   private username: string;
   private password: string;
   private timeout: number;
-  private sessionId: string = '00000000000000000000000000000000';
+  private sessionId = '00000000000000000000000000000000';
   private reqId = 0;
 
-  constructor(opts: UbusClientOptions) {
-    this.url = opts.url;
-    this.username = opts.username ?? 'root';
-    this.password = opts.password ?? '';
-    this.timeout = opts.timeout ?? 10_000;
+  constructor(opts?: UbusClientOptions) {
+    this.mode = opts?.mode ?? 'cli';
+    this.url = opts?.url ?? 'http://127.0.0.1/ubus';
+    this.username = opts?.username ?? 'root';
+    this.password = opts?.password ?? '';
+    this.timeout = opts?.timeout ?? 10_000;
   }
 
-  /** Authenticate and get a session token */
+  /** Authenticate (HTTP mode only) */
   async login(): Promise<void> {
-    const result = await this.rawCall<{ ubus_rpc_session: string }>(
+    if (this.mode === 'cli') return; // not needed
+    const result = await this.httpCall<{ ubus_rpc_session: string }>(
       'session', 'login',
       { username: this.username, password: this.password }
     );
@@ -47,26 +59,56 @@ export class UbusClient {
     }
   }
 
-  /** Call a ubus method. Auto-re-logins on session expiry. */
+  /** Call a ubus method */
   async call<T = unknown>(object: string, method: string, params: Record<string, unknown> = {}): Promise<T> {
+    if (this.mode === 'cli') {
+      return this.cliCall<T>(object, method, params);
+    }
     try {
-      return await this.rawCall<T>(object, method, params);
+      return await this.httpCall<T>(object, method, params);
     } catch (e) {
       if (e instanceof UbusError && e.code === 6) {
-        // Permission denied — try re-login
         await this.login();
-        return await this.rawCall<T>(object, method, params);
+        return await this.httpCall<T>(object, method, params);
       }
       throw e;
     }
   }
 
-  /** Low-level JSON-RPC call */
-  private async rawCall<T>(object: string, method: string, params: Record<string, unknown>): Promise<T> {
+  /** List available ubus objects */
+  async list(): Promise<string[]> {
+    if (this.mode === 'cli') {
+      const { stdout } = await exec('ubus', ['list'], { timeout: this.timeout });
+      return stdout.trim().split('\n').filter(Boolean);
+    }
+    // HTTP mode: no direct list support
+    return [];
+  }
+
+  // --- CLI mode ---
+  private async cliCall<T>(object: string, method: string, params: Record<string, unknown>): Promise<T> {
+    const args = ['call', object, method];
+    if (Object.keys(params).length > 0) {
+      args.push(JSON.stringify(params));
+    }
+    try {
+      const { stdout } = await exec('ubus', args, { timeout: this.timeout });
+      return stdout.trim() ? JSON.parse(stdout) as T : {} as T;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      // ubus returns exit code 4 for NOT_FOUND, 6 for PERMISSION_DENIED, etc.
+      if (message.includes('Command failed')) {
+        throw new UbusError(4, `ubus call ${object} ${method} failed: ${message}`);
+      }
+      throw err;
+    }
+  }
+
+  // --- HTTP mode ---
+  private async httpCall<T>(object: string, method: string, params: Record<string, unknown>): Promise<T> {
     const id = ++this.reqId;
     const body = JSON.stringify({
-      jsonrpc: '2.0',
-      id,
+      jsonrpc: '2.0', id,
       method: 'call',
       params: [this.sessionId, object, method, params]
     });
@@ -82,33 +124,17 @@ export class UbusClient {
         signal: controller.signal
       });
 
-      if (!resp.ok) {
-        throw new Error(`ubus HTTP ${resp.status}: ${resp.statusText}`);
-      }
-
+      if (!resp.ok) throw new Error(`ubus HTTP ${resp.status}`);
       const json = await resp.json() as UbusResponse<T>;
-
-      if (json.error) {
-        throw new UbusError(json.error.code, json.error.message);
-      }
-
-      if (!json.result) {
-        throw new Error('ubus: empty result');
-      }
+      if (json.error) throw new UbusError(json.error.code, json.error.message);
+      if (!json.result) throw new Error('ubus: empty result');
 
       const [code, data] = json.result;
-      if (code !== 0) {
-        throw new UbusError(code, `ubus error: ${code}`);
-      }
-
+      if (code !== 0) throw new UbusError(code, `ubus error: ${code}`);
       return (data ?? {}) as T;
     } finally {
       clearTimeout(timer);
     }
-  }
-
-  get session(): string {
-    return this.sessionId;
   }
 }
 
@@ -118,15 +144,3 @@ export class UbusError extends Error {
     this.name = 'UbusError';
   }
 }
-
-/** Error codes */
-export const UBUS_STATUS = {
-  OK: 0,
-  INVALID_COMMAND: 1,
-  INVALID_ARGUMENT: 2,
-  METHOD_NOT_FOUND: 3,
-  NOT_FOUND: 4,
-  NO_DATA: 5,
-  PERMISSION_DENIED: 6,
-  TIMEOUT: 7,
-} as const;

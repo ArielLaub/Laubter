@@ -23,7 +23,7 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const PORT = parseInt(process.env.PORT ?? '3001');
 const UBUS_URL = process.env.UBUS_URL ?? 'http://127.0.0.1/ubus';
 const STATIC_DIR = process.env.STATIC_DIR ?? join(__dirname, '../../frontend/dist');
-const PLUGINS_DIR = join(__dirname, 'plugins');
+const PLUGINS_DIR = process.env.PLUGINS_DIR ?? join(__dirname, 'plugins');
 
 // --- MIME types for static serving ---
 const MIME: Record<string, string> = {
@@ -38,18 +38,23 @@ async function main(): Promise<void> {
   console.log('Laubter v2 starting...');
 
   // Core services
-  const ubus = new UbusClient({ url: UBUS_URL });
+  const isRouter = process.platform === 'linux' && process.arch === 'arm64';
+  const ubusMode = (process.env.UBUS_MODE ?? (isRouter ? 'cli' : 'http')) as 'cli' | 'http';
+  const ubus = new UbusClient({ mode: ubusMode, url: UBUS_URL });
   const uci = new UCIClient();
   const wsHub = new WebSocketHub();
   const router = new HttpRouter();
   const loader = new PluginLoader();
 
-  // Authenticate with ubus
-  try {
-    await ubus.login();
-    console.log('[ubus] Authenticated');
-  } catch (err) {
-    console.warn('[ubus] Login failed, running without auth:', err);
+  console.log(`[ubus] Mode: ${ubusMode}`);
+
+  if (ubusMode === 'http') {
+    try {
+      await ubus.login();
+      console.log('[ubus] Authenticated');
+    } catch (err) {
+      console.warn('[ubus] Login failed, running without auth:', err);
+    }
   }
 
   // Plugin context
@@ -70,10 +75,34 @@ async function main(): Promise<void> {
     }
   });
 
-  // Load plugins
-  console.log('[loader] Scanning plugins...');
-  await loader.loadAll(PLUGINS_DIR, ctx, router, wsHub);
-  console.log(`[loader] ${loader.plugins.size} plugin(s) loaded`);
+  // Load plugins — bundled imports + dynamic discovery
+  console.log('[loader] Loading plugins...');
+
+  // Bundled plugins (always available)
+  const { default: systemPlugin } = await import('./plugins/system.js');
+  const bundledPlugins = [systemPlugin];
+
+  for (const plugin of bundledPlugins) {
+    try {
+      ctx.log = (msg: string) => console.log(`[${plugin.manifest.name}] ${msg}`);
+      const reg = await plugin.setup(ctx);
+      for (const route of reg.routes ?? []) { router.add(route); }
+      for (const sub of reg.subscriptions ?? []) { wsHub.registerSubscription(sub); }
+      loader.registerPlugin(plugin, reg);
+      console.log(`  [+] ${plugin.manifest.name} v${plugin.manifest.version}`);
+    } catch (err) {
+      console.error(`  [-] ${plugin.manifest.name}: ${err}`);
+    }
+  }
+
+  // Dynamic plugins from disk (dev mode / external plugins)
+  try {
+    await loader.loadAll(PLUGINS_DIR, ctx, router, wsHub);
+  } catch {
+    // No plugins dir — that's fine in bundled mode
+  }
+
+  console.log(`[loader] ${loader.plugins.size} plugin(s) active`);
 
   // HTTP server
   const server = createServer(async (req, res) => {
