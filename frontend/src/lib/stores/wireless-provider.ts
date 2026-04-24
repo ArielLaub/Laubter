@@ -12,6 +12,29 @@ import { dhcpLeaseList } from '$stores/wireless';
 // Active provider instance
 let activeProvider: WirelessProvider = getProvider('openwrt');
 
+// Sticky wireless MAC cache: once a MAC is seen as wireless, it stays wireless
+// Persisted to localStorage so it survives page reloads
+const WIRELESS_CACHE_KEY = 'laubter_wireless_macs';
+const stickyWirelessMacs: Map<string, { band?: string }> = new Map();
+
+function loadStickyCache(): void {
+	try {
+		const raw = localStorage.getItem(WIRELESS_CACHE_KEY);
+		if (raw) {
+			const entries = JSON.parse(raw) as Array<[string, { band?: string }]>;
+			for (const [mac, info] of entries) stickyWirelessMacs.set(mac, info);
+		}
+	} catch { /* ignore */ }
+}
+
+function saveStickyCache(): void {
+	try {
+		localStorage.setItem(WIRELESS_CACHE_KEY, JSON.stringify([...stickyWirelessMacs]));
+	} catch { /* ignore */ }
+}
+
+loadStickyCache();
+
 export const wirelessTopology = writable<WirelessTopology | null>(null);
 export const wirelessConfig = writable<WirelessConfig | null>(null);
 export const wirelessError = writable<string | null>(null);
@@ -121,6 +144,30 @@ export async function fetchWirelessTopology(): Promise<void> {
 				const dhcpName = dhcpNameMap.get(client.mac.toLowerCase());
 				if (dhcpName) {
 					client.name = dhcpName;
+				}
+			}
+		}
+
+		// Sticky wireless: record any client currently seen as wireless
+		let cacheChanged = false;
+		for (const client of topology.clients) {
+			if (client.isWireless) {
+				const mac = client.mac.toLowerCase();
+				if (!stickyWirelessMacs.has(mac) || client.band) {
+					stickyWirelessMacs.set(mac, { band: client.band });
+					cacheChanged = true;
+				}
+			}
+		}
+		if (cacheChanged) saveStickyCache();
+
+		// Apply sticky wireless state to clients that are currently showing as wired
+		for (const client of topology.clients) {
+			if (!client.isWireless) {
+				const cached = stickyWirelessMacs.get(client.mac.toLowerCase());
+				if (cached) {
+					client.isWireless = true;
+					if (!client.band && cached.band) client.band = cached.band as typeof client.band;
 				}
 			}
 		}

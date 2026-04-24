@@ -90,11 +90,21 @@
 		name: string;
 		src: string;
 		dest: string;
+		src_ip: string;
+		dest_ip: string;
+		src_port: string;
 		proto: string;
 		dest_port: string;
+		src_mac: string[];
+		ipset: string;
+		family: string;
 		target: string;
 		enabled: boolean;
 		isSystem: boolean;
+		weekdays: string;
+		start_time: string;
+		stop_time: string;
+		log: boolean;
 	}
 
 	const SYSTEM_RULE_PREFIXES = ['Allow-', 'Reject-', 'Drop-'];
@@ -115,12 +125,24 @@
 
 	let rules = $state<FwRule[]>([]);
 	let showAddRule = $state(false);
+	let editingRule = $state<string | null>(null);
 	let ruleForm = $state({
 		name: '',
-		direction: 'inbound',
-		proto: 'tcp',
+		src: '',
+		dest: '',
+		src_ip: '',
+		dest_ip: '',
+		src_port: '',
+		proto: 'any',
 		dest_port: '',
-		target: 'ACCEPT'
+		src_mac: '',
+		ipset: '',
+		family: '',
+		target: 'DROP',
+		weekdays: '',
+		start_time: '',
+		stop_time: '',
+		log: false
 	});
 
 	// --- IP Groups (ipset) ---
@@ -315,16 +337,28 @@
 
 		rules = uci.sections('firewall', 'rule').map(sec => {
 			const name = (sec.name as string) ?? '';
+			const srcMac = Array.isArray(sec.src_mac) ? sec.src_mac as string[] :
+				typeof sec.src_mac === 'string' ? [sec.src_mac] : [];
 			return {
 				section: sec['.name'] as string,
 				name,
 				src: (sec.src as string) ?? '',
 				dest: (sec.dest as string) ?? '',
+				src_ip: (sec.src_ip as string) ?? '',
+				dest_ip: (sec.dest_ip as string) ?? '',
+				src_port: (sec.src_port as string) ?? '',
 				proto: (sec.proto as string) ?? 'any',
 				dest_port: (sec.dest_port as string) ?? '',
+				src_mac: srcMac,
+				ipset: (sec.ipset as string) ?? '',
+				family: (sec.family as string) ?? '',
 				target: (sec.target as string) ?? 'ACCEPT',
 				enabled: sec.enabled !== '0' && sec.enabled !== 0,
-				isSystem: SYSTEM_RULE_PREFIXES.some(p => name.startsWith(p))
+				isSystem: SYSTEM_RULE_PREFIXES.some(p => name.startsWith(p)),
+				weekdays: Array.isArray(sec.weekdays) ? (sec.weekdays as string[]).join(' ') : (sec.weekdays as string) ?? '',
+				start_time: (sec.start_time as string) ?? '',
+				stop_time: (sec.stop_time as string) ?? '',
+				log: sec.extra === '--log-prefix' || sec.log === '1'
 			};
 		});
 
@@ -476,33 +510,74 @@
 
 	// --- Rule CRUD ---
 	function resetRuleForm() {
-		ruleForm = { name: '', direction: 'inbound', proto: 'tcp', dest_port: '', target: 'ACCEPT' };
+		ruleForm = { name: '', src: '', dest: '', src_ip: '', dest_ip: '', src_port: '', proto: 'any', dest_port: '', src_mac: '', ipset: '', family: '', target: 'DROP', weekdays: '', start_time: '', stop_time: '', log: false };
 		showAddRule = false;
+		editingRule = null;
 	}
 
-	function directionToZones(direction: string): { src: string; dest: string } {
-		switch (direction) {
-			case 'inbound': return { src: 'wan', dest: '' };
-			case 'outbound': return { src: 'lan', dest: 'wan' };
-			case 'forward': return { src: 'lan', dest: 'wan' };
-			default: return { src: '', dest: '' };
+	function startEditRule(rule: FwRule) {
+		editingRule = rule.section;
+		ruleForm = {
+			name: rule.name,
+			src: rule.src,
+			dest: rule.dest,
+			src_ip: rule.src_ip,
+			dest_ip: rule.dest_ip,
+			src_port: rule.src_port,
+			proto: rule.proto || 'any',
+			dest_port: rule.dest_port,
+			src_mac: rule.src_mac.join(', '),
+			ipset: rule.ipset,
+			family: rule.family,
+			target: rule.target,
+			weekdays: rule.weekdays,
+			start_time: rule.start_time,
+			stop_time: rule.stop_time,
+			log: rule.log
+		};
+		showAddRule = true;
+	}
+
+	function applyRuleForm(sid: string) {
+		const vals: Record<string, string | string[] | undefined> = {
+			name: ruleForm.name,
+			src: ruleForm.src || undefined,
+			dest: ruleForm.dest || undefined,
+			src_ip: ruleForm.src_ip || undefined,
+			dest_ip: ruleForm.dest_ip || undefined,
+			src_port: ruleForm.src_port || undefined,
+			proto: ruleForm.proto === 'any' ? undefined : ruleForm.proto,
+			dest_port: ruleForm.dest_port || undefined,
+			ipset: ruleForm.ipset || undefined,
+			family: ruleForm.family || undefined,
+			target: ruleForm.target,
+			enabled: '1',
+			weekdays: ruleForm.weekdays || undefined,
+			start_time: ruleForm.start_time || undefined,
+			stop_time: ruleForm.stop_time || undefined
+		};
+		// Handle src_mac as list
+		const macs = ruleForm.src_mac.split(/[,\s]+/).map(m => m.trim()).filter(Boolean);
+		if (macs.length > 0) vals.src_mac = macs;
+
+		for (const [key, val] of Object.entries(vals)) {
+			if (val !== undefined) {
+				uci.set('firewall', sid, key, val as string);
+			} else {
+				// Clear the field if it was previously set
+				try { uci.set('firewall', sid, key, ''); } catch {}
+			}
 		}
 	}
 
 	function saveRule() {
 		if (!ruleForm.name) return;
-		const zones = directionToZones(ruleForm.direction);
-		const protoVal = ruleForm.proto === 'any' ? undefined : ruleForm.proto;
-		const sid = uci.add('firewall', 'rule');
-		uci.set('firewall', sid, {
-			name: ruleForm.name,
-			src: zones.src || undefined,
-			dest: zones.dest || undefined,
-			proto: protoVal,
-			dest_port: ruleForm.dest_port || undefined,
-			target: ruleForm.target,
-			enabled: '1'
-		});
+		if (editingRule) {
+			applyRuleForm(editingRule);
+		} else {
+			const sid = uci.add('firewall', 'rule');
+			applyRuleForm(sid);
+		}
 		resetRuleForm();
 		loadFirewall();
 	}
@@ -843,21 +918,55 @@
 
 			{#if showAddRule}
 				<div class="edit-card">
-					<h3 class="edit-title">Add Firewall Rule</h3>
+					<h3 class="edit-title">{editingRule ? 'Edit Rule' : 'Add Firewall Rule'}</h3>
+
+					<!-- Row 1: Name + Action -->
 					<div class="form-row">
 						<div class="form-group">
 							<label class="form-label">Name</label>
-							<input type="text" class="form-input" bind:value={ruleForm.name} placeholder="e.g. Allow SSH" />
+							<input type="text" class="form-input" bind:value={ruleForm.name} placeholder="e.g. Block IoT Internet" />
 						</div>
 						<div class="form-group">
-							<label class="form-label">Direction</label>
-							<select class="form-input" bind:value={ruleForm.direction}>
-								<option value="inbound">Inbound (from internet)</option>
-								<option value="outbound">Outbound (to internet)</option>
-								<option value="forward">Forward</option>
+							<label class="form-label">Action</label>
+							<div class="segmented">
+								<button class="seg-btn seg-allow" class:seg-active={ruleForm.target === 'ACCEPT'} onclick={() => ruleForm.target = 'ACCEPT'}>Allow</button>
+								<button class="seg-btn seg-block" class:seg-active={ruleForm.target === 'DROP'} onclick={() => ruleForm.target = 'DROP'}>Block</button>
+								<button class="seg-btn seg-reject" class:seg-active={ruleForm.target === 'REJECT'} onclick={() => ruleForm.target = 'REJECT'}>Reject</button>
+							</div>
+						</div>
+					</div>
+
+					<!-- Row 2: Source zone + Dest zone -->
+					<div class="form-row">
+						<div class="form-group">
+							<label class="form-label">Source Zone</label>
+							<select class="form-input" bind:value={ruleForm.src}>
+								<option value="">Any</option>
+								{#each zones as z}<option value={z.name}>{z.name.toUpperCase()}</option>{/each}
+							</select>
+						</div>
+						<div class="form-group">
+							<label class="form-label">Destination Zone</label>
+							<select class="form-input" bind:value={ruleForm.dest}>
+								<option value="">Any</option>
+								{#each zones as z}<option value={z.name}>{z.name.toUpperCase()}</option>{/each}
 							</select>
 						</div>
 					</div>
+
+					<!-- Row 3: Source IP + Dest IP -->
+					<div class="form-row">
+						<div class="form-group">
+							<label class="form-label">Source IP / CIDR <span class="form-hint">(optional)</span></label>
+							<input type="text" class="form-input mono" bind:value={ruleForm.src_ip} placeholder="e.g. 192.168.50.100 or 192.168.50.0/24" />
+						</div>
+						<div class="form-group">
+							<label class="form-label">Destination IP / CIDR <span class="form-hint">(optional)</span></label>
+							<input type="text" class="form-input mono" bind:value={ruleForm.dest_ip} placeholder="e.g. 10.0.0.0/8" />
+						</div>
+					</div>
+
+					<!-- Row 4: Protocol + Ports -->
 					<div class="form-row">
 						<div class="form-group">
 							<label class="form-label">Protocol</label>
@@ -869,21 +978,67 @@
 							</div>
 						</div>
 						<div class="form-group">
-							<label class="form-label">Port <span class="form-hint">(optional)</span></label>
-							<input type="number" class="form-input mono" bind:value={ruleForm.dest_port} placeholder="e.g. 22, 80" />
+							<label class="form-label">Source Port <span class="form-hint">(optional)</span></label>
+							<input type="text" class="form-input mono" bind:value={ruleForm.src_port} placeholder="any" />
 						</div>
 						<div class="form-group">
-							<label class="form-label">Action</label>
-							<div class="segmented">
-								<button class="seg-btn seg-allow" class:seg-active={ruleForm.target === 'ACCEPT'} onclick={() => ruleForm.target = 'ACCEPT'}>Allow</button>
-								<button class="seg-btn seg-block" class:seg-active={ruleForm.target === 'DROP'} onclick={() => ruleForm.target = 'DROP'}>Block</button>
-								<button class="seg-btn seg-reject" class:seg-active={ruleForm.target === 'REJECT'} onclick={() => ruleForm.target = 'REJECT'}>Reject</button>
-							</div>
+							<label class="form-label">Dest Port <span class="form-hint">(optional)</span></label>
+							<input type="text" class="form-input mono" bind:value={ruleForm.dest_port} placeholder="any" />
 						</div>
 					</div>
+
+					<!-- Row 5: IP Set + Source MAC -->
+					<div class="form-row">
+						<div class="form-group">
+							<label class="form-label">Use IP Set <span class="form-hint">(optional)</span></label>
+							<select class="form-input" bind:value={ruleForm.ipset}>
+								<option value="">None</option>
+								{#each groups as g}
+									<option value={g.name}>{g.name} ({g.entries.length} entries)</option>
+								{/each}
+							</select>
+						</div>
+						<div class="form-group">
+							<label class="form-label">Source MAC <span class="form-hint">(optional, comma-separated)</span></label>
+							<input type="text" class="form-input mono" bind:value={ruleForm.src_mac} placeholder="e.g. AA:BB:CC:DD:EE:FF" />
+						</div>
+					</div>
+
+					<!-- Row 6: Address family + Schedule -->
+					<div class="form-row">
+						<div class="form-group">
+							<label class="form-label">Address Family</label>
+							<select class="form-input" bind:value={ruleForm.family}>
+								<option value="">IPv4 and IPv6</option>
+								<option value="ipv4">IPv4 only</option>
+								<option value="ipv6">IPv6 only</option>
+							</select>
+						</div>
+						<div class="form-group">
+							<label class="form-label">Week Days <span class="form-hint">(optional)</span></label>
+							<input type="text" class="form-input" bind:value={ruleForm.weekdays} placeholder="e.g. Mon Tue Wed" />
+						</div>
+					</div>
+
+					<!-- Row 7: Time range -->
+					<div class="form-row">
+						<div class="form-group">
+							<label class="form-label">Start Time <span class="form-hint">(hh:mm:ss)</span></label>
+							<input type="text" class="form-input mono" bind:value={ruleForm.start_time} placeholder="e.g. 22:00:00" />
+						</div>
+						<div class="form-group">
+							<label class="form-label">Stop Time <span class="form-hint">(hh:mm:ss)</span></label>
+							<input type="text" class="form-input mono" bind:value={ruleForm.stop_time} placeholder="e.g. 07:00:00" />
+						</div>
+					</div>
+
 					<div class="edit-actions">
+						<label class="toggle-row" style="margin-right: auto">
+							<input type="checkbox" bind:checked={ruleForm.log} />
+							Log matched packets
+						</label>
 						<button class="btn btn-secondary btn-sm" onclick={resetRuleForm}>Cancel</button>
-						<button class="btn btn-primary btn-sm" onclick={saveRule}>Save</button>
+						<button class="btn btn-primary btn-sm" onclick={saveRule}>{editingRule ? 'Update' : 'Save'}</button>
 					</div>
 				</div>
 			{/if}
@@ -900,8 +1055,7 @@
 							<tr>
 								<th>Name</th>
 								<th>Direction</th>
-								<th>Protocol</th>
-								<th>Port</th>
+								<th>Match</th>
 								<th>Action</th>
 								<th>Enabled</th>
 								<th class="col-actions"></th>
@@ -921,12 +1075,21 @@
 											</span>
 											{#if RULE_DESCRIPTIONS[rule.name]}
 												<span class="rule-desc">{RULE_DESCRIPTIONS[rule.name]}</span>
+											{:else}
+												<span class="rule-desc">
+													{#if rule.ipset}<span class="rule-detail-badge">ipset: {rule.ipset}</span>{/if}
+													{#if rule.src_ip}<span class="rule-detail-badge">src: {rule.src_ip}</span>{/if}
+													{#if rule.dest_ip}<span class="rule-detail-badge">dst: {rule.dest_ip}</span>{/if}
+													{#if rule.weekdays}<span class="rule-detail-badge">schedule</span>{/if}
+												</span>
 											{/if}
 										</div>
 									</td>
 									<td><span class="dir-badge {directionClass(dir)}">{dir}</span></td>
-									<td><span class="proto-badge {protoClass(rule.proto)}">{protoLabel(rule.proto)}</span></td>
-									<td class="mono">{rule.dest_port || '\u2014'}</td>
+									<td>
+										<span class="proto-badge {protoClass(rule.proto)}">{protoLabel(rule.proto)}</span>
+										{#if rule.dest_port}<span class="mono rule-port">:{rule.dest_port}</span>{/if}
+									</td>
 									<td><span class="action-badge {actionClass(rule.target)}">{actionLabel(rule.target)}</span></td>
 									<td>
 										<button class="toggle-btn" class:on={rule.enabled} onclick={() => toggleRule(rule)}>
@@ -935,6 +1098,7 @@
 									</td>
 									<td class="cell-actions">
 										{#if !rule.isSystem}
+											<button class="btn-icon" title="Edit" onclick={() => startEditRule(rule)}>✎</button>
 											<button class="btn-icon btn-icon-danger" title="Delete" onclick={() => deleteTarget = { type: 'rule', section: rule.section, name: rule.name }}>
 												<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
 											</button>
@@ -1368,7 +1532,13 @@
 
 	/* ===== Rule name with description ===== */
 	.rule-name-wrap { display: flex; flex-direction: column; gap: 2px; }
-	.rule-desc { font-size: 11px; color: var(--color-text-muted); font-weight: 400; line-height: 1.3; }
+	.rule-desc { font-size: 11px; color: var(--color-text-muted); font-weight: 400; line-height: 1.3; display: flex; gap: 4px; flex-wrap: wrap; }
+	.rule-detail-badge {
+		display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px;
+		background: var(--color-surface-600); color: var(--color-text-secondary);
+		font-family: var(--font-mono);
+	}
+	.rule-port { font-size: 12px; color: var(--color-text-secondary); margin-left: 2px; }
 
 	/* ===== System badge ===== */
 	.system-badge {

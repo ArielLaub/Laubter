@@ -188,6 +188,9 @@
 	let bindTargetNode = $state('');
 	let bindLoading = $state(false);
 	let bindError = $state('');
+	let bindApplying = $state(false);
+	let bindApplyProgress = $state(0);
+	let bindApplyMessage = $state('');
 
 	function startBind(client: WirelessClient) {
 		bindingClient = client;
@@ -203,13 +206,30 @@
 			const result = await bindClient(bindingClient.mac, bindTargetNode || '') as unknown as { status?: string; error?: string };
 			if (result && result.error) {
 				bindError = result.error;
-			} else {
-				bindingClient = null;
-				setTimeout(() => fetchMeshTopology(), 2000);
+				bindLoading = false;
+				return;
 			}
+			// Success — show applying modal while ASUS processes the change
+			bindingClient = null;
+			bindLoading = false;
+			bindApplying = true;
+			bindApplyProgress = 0;
+			bindApplyMessage = 'Applying binding to mesh network...';
+
+			const totalWait = 12;
+			for (let i = 1; i <= totalWait; i++) {
+				await new Promise((r) => setTimeout(r, 1000));
+				bindApplyProgress = Math.round((i / totalWait) * 100);
+				if (i === 3) bindApplyMessage = 'Waiting for mesh nodes to sync...';
+				if (i === 8) bindApplyMessage = 'Refreshing topology...';
+			}
+			await fetchMeshTopology();
+			bindApplyMessage = 'Done!';
+			bindApplyProgress = 100;
+			await new Promise((r) => setTimeout(r, 500));
+			bindApplying = false;
 		} catch (e) {
 			bindError = e instanceof Error ? e.message : 'Bind failed';
-		} finally {
 			bindLoading = false;
 		}
 	}
@@ -754,6 +774,22 @@
 	</div>
 {/if}
 
+<!-- Applying progress modal -->
+{#if bindApplying}
+	<div class="modal-backdrop" role="presentation">
+		<div class="modal-card apply-modal" role="dialog">
+			<div class="apply-icon">
+				<Wifi size={28} strokeWidth={1.5} />
+			</div>
+			<h3 class="modal-title" style="text-align: center">{bindApplyMessage}</h3>
+			<div class="progress-bar">
+				<div class="progress-fill" style="width: {bindApplyProgress}%"></div>
+			</div>
+			<p class="apply-pct">{bindApplyProgress}%</p>
+		</div>
+	</div>
+{/if}
+
 <style>
 	.mesh-page { display: flex; flex-direction: column; gap: 28px; max-width: 1400px; }
 
@@ -1117,6 +1153,30 @@
 		font-family: inherit;
 	}
 	.btn-primary:disabled { opacity: 0.6; }
+
+	/* Applying progress modal */
+	.apply-modal { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 32px; }
+	.apply-icon {
+		width: 56px; height: 56px; border-radius: 50%;
+		background: var(--color-accent-muted); color: var(--color-accent-light);
+		display: flex; align-items: center; justify-content: center;
+		animation: pulse-icon 1.5s ease-in-out infinite;
+	}
+	@keyframes pulse-icon {
+		0%, 100% { opacity: 0.7; transform: scale(1); }
+		50% { opacity: 1; transform: scale(1.05); }
+	}
+	.progress-bar {
+		width: 100%; height: 6px; border-radius: 3px;
+		background: var(--color-surface-600); overflow: hidden;
+	}
+	.progress-fill {
+		height: 100%; border-radius: 3px;
+		background: var(--color-accent);
+		box-shadow: 0 0 8px rgba(0,111,255,0.4);
+		transition: width 0.5s ease;
+	}
+	.apply-pct { font-size: 12px; color: var(--color-text-muted); margin: 0; font-family: var(--font-mono); }
 
 	@media (max-width: 900px) {
 		.hero { flex-direction: column; gap: 20px; align-items: flex-start; }
