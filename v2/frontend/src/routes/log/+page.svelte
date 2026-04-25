@@ -7,13 +7,31 @@
   let search = $state('');
   let loading = $state(true);
   let autoScroll = $state(true);
+  let severity = $state<'all' | 'error' | 'warning' | 'info'>('all');
   let logEl = $state<HTMLDivElement | null>(null);
 
   const filtered = $derived.by(() => {
-    if (!search.trim()) return lines;
-    const q = search.toLowerCase();
-    return lines.filter(l => l.toLowerCase().includes(q));
+    let list = lines;
+    // Severity filter
+    if (severity === 'error') list = list.filter(l => /\.err |\.crit |\.alert |\.emerg /i.test(l));
+    else if (severity === 'warning') list = list.filter(l => /\.warn /i.test(l));
+    else if (severity === 'info') list = list.filter(l => /\.info |\.notice /i.test(l));
+    // Text search
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(l => l.toLowerCase().includes(q));
+    }
+    return list;
   });
+
+  function exportLog() {
+    const text = filtered.join('\n');
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `router-log-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+  }
 
   // Color-code log levels
   function lineClass(line: string): string {
@@ -54,10 +72,14 @@
       <h1 class="text-2xl font-bold text-white">System Log</h1>
       <p class="text-sm text-[#8b949e]">{filtered.length} lines {search ? `(filtered from ${lines.length})` : ''}</p>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 flex-wrap">
       <button class="px-3 py-1.5 rounded-lg text-sm font-medium bg-[var(--color-surface-600)] text-white hover:bg-[var(--color-surface-500)] transition-colors flex items-center gap-1.5"
         onclick={loadLog}>
         <RefreshCw size={14} class={loading ? 'animate-spin' : ''} /> Refresh
+      </button>
+      <button class="px-3 py-1.5 rounded-lg text-sm font-medium bg-[var(--color-surface-600)] text-white hover:bg-[var(--color-surface-500)] transition-colors flex items-center gap-1.5"
+        onclick={exportLog}>
+        Export
       </button>
       <button class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5
         {autoScroll ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-surface-600)] text-[#8b949e]'}"
@@ -71,6 +93,22 @@
   <div class="flex items-center gap-2 px-3 py-2.5 bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-lg text-sm flex-shrink-0">
     <Search size={15} class="text-[#8b949e]" />
     <input type="text" bind:value={search} placeholder="Filter log (e.g. error, dnsmasq, dhcp...)" class="flex-1 bg-transparent border-none outline-none text-white placeholder:text-[#8b949e]" />
+  </div>
+
+  <!-- Severity filter -->
+  <div class="flex items-center gap-1.5 flex-shrink-0">
+    {#each [
+      { id: 'all', label: 'All', color: '' },
+      { id: 'error', label: 'Errors', color: 'text-[#ef4444]' },
+      { id: 'warning', label: 'Warnings', color: 'text-[#f59e0b]' },
+      { id: 'info', label: 'Info', color: 'text-[#3b82f6]' },
+    ] as sev}
+      <button class="px-3 py-1 rounded-lg text-xs font-medium transition-colors {severity === sev.id ? 'bg-[var(--color-accent-muted)] text-[var(--color-accent-light)]' : 'bg-[var(--color-surface-700)] text-[#8b949e] hover:text-white'}"
+        onclick={() => severity = sev.id as typeof severity}>
+        {sev.label}
+      </button>
+    {/each}
+    <span class="text-xs text-[#8b949e] ml-2">{filtered.length} / {lines.length}</span>
   </div>
 
   <!-- Log viewer -->

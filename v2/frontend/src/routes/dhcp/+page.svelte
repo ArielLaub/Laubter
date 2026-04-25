@@ -182,7 +182,7 @@
   <!-- Tabs -->
   <div class="flex gap-0 border-b-2 border-[var(--color-surface-500)] overflow-x-auto">
     {#each [
-      { id: 'leases', label: 'Active Leases', count: leases.length },
+      { id: 'leases', label: 'Active Leases', count: dynamicLeases.length },
       { id: 'hosts', label: 'Static Leases', count: hosts.length },
       { id: 'dns', label: 'DNS Records', count: domains.length },
       { id: 'pools', label: 'DHCP Pools', count: pools.length },
@@ -209,19 +209,20 @@
             <th class="text-left px-4 py-2.5 text-[11px] font-semibold text-[#8b949e] uppercase">Hostname</th>
             <th class="text-left px-4 py-2.5 text-[11px] font-semibold text-[#8b949e] uppercase">IP</th>
             <th class="text-left px-4 py-2.5 text-[11px] font-semibold text-[#8b949e] uppercase">MAC</th>
-            <th class="text-left px-4 py-2.5 text-[11px] font-semibold text-[#8b949e] uppercase">Expires</th>
-            <th class="w-16"></th>
+            <th class="text-left px-4 py-2.5 text-[11px] font-semibold text-[#8b949e] uppercase">Expires In</th>
+            <th class="w-24"></th>
           </tr>
         </thead>
         <tbody>
           {#each dynamicLeases as lease (lease.mac)}
+            {@const expiresIn = Math.max(0, lease.ts - Date.now() / 1000)}
             <tr class="border-b border-[var(--color-surface-600)]/50 hover:bg-white/[0.02]">
               <td class="px-4 py-2.5 font-medium text-white">{lease.hostname || '(unknown)'}</td>
               <td class="px-4 py-2.5 font-mono text-xs text-[#c9d1d9]">{lease.ip}</td>
-              <td class="px-4 py-2.5 font-mono text-xs text-[#8b949e]">{lease.mac?.toUpperCase()}</td>
-              <td class="px-4 py-2.5 text-xs text-[#8b949e]">{new Date(lease.ts * 1000).toLocaleString()}</td>
+              <td class="px-4 py-2.5 font-mono text-xs text-[#8b949e]">{lease.mac?.toLowerCase()}</td>
+              <td class="px-4 py-2.5 text-xs text-[#8b949e]">{expiresIn >= 3600 ? Math.floor(expiresIn / 3600) + 'h' : expiresIn >= 60 ? Math.floor(expiresIn / 60) + 'm' : Math.floor(expiresIn) + 's'}</td>
               <td class="px-4 py-2.5">
-                <button class="text-[11px] px-2 py-1 rounded bg-[var(--color-accent-muted)] text-[var(--color-accent-light)] hover:bg-[var(--color-accent)] hover:text-white transition-colors"
+                <button class="text-[11px] px-3 py-1.5 rounded-lg bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-light)] transition-colors font-medium"
                   onclick={() => startAddHost(lease)}>
                   Make Static
                 </button>
