@@ -2,14 +2,40 @@
   import '../app.css';
   import { page } from '$app/state';
   import { init, connected } from '$lib/stores/websocket';
+  import { authenticated, username, checkAuth, login, logout } from '$lib/stores/auth';
   import { onMount } from 'svelte';
-  import { LayoutDashboard, Wifi, Users, Shield, ShieldCheck, Lock, Settings, Server, Menu, X, BarChart3, ScrollText } from 'lucide-svelte';
+  import { LayoutDashboard, Wifi, Users, Shield, ShieldCheck, Lock, Settings, Server, Menu, X, BarChart3, ScrollText, LogOut } from 'lucide-svelte';
   import { toasts } from '$lib/stores/toast';
 
   let { children } = $props();
   let mobileOpen = $state(false);
+  let loginLoading = $state(false);
+  let loginError = $state('');
+  let loginUser = $state('root');
+  let loginPass = $state('');
+  let authChecked = $state(false);
 
-  onMount(() => init());
+  onMount(async () => {
+    await checkAuth();
+    authChecked = true;
+    if ($authenticated) init();
+  });
+
+  async function handleLogin() {
+    loginLoading = true;
+    loginError = '';
+    const result = await login(loginUser, loginPass);
+    if (result.ok) {
+      init(); // start WebSocket
+    } else {
+      loginError = result.error ?? 'Login failed';
+    }
+    loginLoading = false;
+  }
+
+  async function handleLogout() {
+    await logout();
+  }
 
   const nav = [
     { href: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -24,80 +50,121 @@
     { href: '/settings', label: 'Settings', icon: Settings },
   ];
 
-  // Close sidebar on navigation
   $effect(() => {
     page.url.pathname;
     mobileOpen = false;
   });
 </script>
 
-<div class="flex h-screen overflow-hidden">
-  <!-- Mobile header -->
-  <div class="fixed top-0 left-0 right-0 h-14 bg-[var(--color-surface-800)] border-b border-[var(--color-surface-500)] flex items-center px-4 gap-3 z-40 lg:hidden">
-    <button class="p-1 text-[#8b949e]" onclick={() => mobileOpen = !mobileOpen}>
-      {#if mobileOpen}<X size={22} />{:else}<Menu size={22} />{/if}
-    </button>
-    <span class="text-base font-bold text-[var(--color-accent-light)]">Laubter</span>
-    <div class="ml-auto flex items-center gap-2 text-[11px] text-[#8b949e]">
-      <div class="w-2 h-2 rounded-full {$connected ? 'bg-[var(--color-success)]' : 'bg-[var(--color-danger)]'}"></div>
-      {$connected ? 'Live' : '...'}
+{#if !authChecked}
+  <!-- Loading -->
+  <div class="h-screen flex items-center justify-center bg-[var(--color-surface-900)]">
+    <div class="text-[#8b949e]">Loading...</div>
+  </div>
+{:else if !$authenticated}
+  <!-- Login page -->
+  <div class="h-screen flex items-center justify-center bg-[var(--color-surface-900)]">
+    <div class="w-full max-w-sm p-8">
+      <div class="text-center mb-8">
+        <h1 class="text-2xl font-bold text-[var(--color-accent-light)]">Laubter</h1>
+        <p class="text-sm text-[#8b949e] mt-1">Router Management</p>
+      </div>
+
+      <form class="space-y-4" onsubmit={(e) => { e.preventDefault(); handleLogin(); }}>
+        <div>
+          <label class="block text-[12px] text-[#8b949e] mb-1.5">Username</label>
+          <input class="w-full px-4 py-3 bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-lg text-white outline-none focus:border-[var(--color-accent)]"
+            bind:value={loginUser} />
+        </div>
+        <div>
+          <label class="block text-[12px] text-[#8b949e] mb-1.5">Password</label>
+          <input type="password" class="w-full px-4 py-3 bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-lg text-white outline-none focus:border-[var(--color-accent)]"
+            bind:value={loginPass} autofocus />
+        </div>
+
+        {#if loginError}
+          <div class="text-xs text-[#ef4444] bg-[rgba(239,68,68,0.1)] px-3 py-2 rounded-lg">{loginError}</div>
+        {/if}
+
+        <button type="submit" class="w-full py-3 bg-[var(--color-accent)] text-white rounded-lg font-medium hover:bg-[var(--color-accent-light)] transition-colors disabled:opacity-50"
+          disabled={loginLoading}>
+          {loginLoading ? 'Signing in...' : 'Sign In'}
+        </button>
+      </form>
     </div>
   </div>
-
-  <!-- Sidebar backdrop (mobile) -->
-  {#if mobileOpen}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="fixed inset-0 bg-black/50 z-40 lg:hidden" onclick={() => mobileOpen = false}></div>
-  {/if}
-
-  <!-- Sidebar -->
-  <nav class="fixed lg:static top-0 left-0 bottom-0 w-56 flex-shrink-0 bg-[var(--color-surface-800)] border-r border-[var(--color-surface-500)] flex flex-col z-50
-    transition-transform duration-200 {mobileOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0">
-    <div class="px-5 py-5 border-b border-[var(--color-surface-500)]">
-      <div class="text-xl font-bold text-[var(--color-accent-light)] tracking-tight">Laubter</div>
-      <div class="text-[10px] text-[#8b949e] mt-0.5 tracking-wider uppercase">Router Management</div>
+{:else}
+  <!-- Authenticated app -->
+  <div class="flex h-screen overflow-hidden">
+    <!-- Mobile header -->
+    <div class="fixed top-0 left-0 right-0 h-14 bg-[var(--color-surface-800)] border-b border-[var(--color-surface-500)] flex items-center px-4 gap-3 z-40 lg:hidden">
+      <button class="p-1 text-[#8b949e]" onclick={() => mobileOpen = !mobileOpen}>
+        {#if mobileOpen}<X size={22} />{:else}<Menu size={22} />{/if}
+      </button>
+      <span class="text-base font-bold text-[var(--color-accent-light)]">Laubter</span>
+      <div class="ml-auto flex items-center gap-2 text-[11px] text-[#8b949e]">
+        <div class="w-2 h-2 rounded-full {$connected ? 'bg-[var(--color-success)]' : 'bg-[var(--color-danger)]'}"></div>
+        {$connected ? 'Live' : '...'}
+      </div>
     </div>
 
-    <div class="flex-1 py-3 flex flex-col gap-0.5 px-2 overflow-y-auto">
-      {#each nav as item}
-        {@const active = page.url.pathname === item.href || (item.href !== '/' && page.url.pathname.startsWith(item.href))}
-        <a href={item.href}
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-            {active
-              ? 'bg-[var(--color-accent)] text-white shadow-md shadow-[var(--color-accent)]/20'
-              : 'text-[#8b949e] hover:text-white hover:bg-[var(--color-surface-700)]'}">
-          <item.icon size={18} strokeWidth={1.75} />
-          {item.label}
-        </a>
+    {#if mobileOpen}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="fixed inset-0 bg-black/50 z-40 lg:hidden" onclick={() => mobileOpen = false}></div>
+    {/if}
+
+    <!-- Sidebar -->
+    <nav class="fixed lg:static top-0 left-0 bottom-0 w-56 flex-shrink-0 bg-[var(--color-surface-800)] border-r border-[var(--color-surface-500)] flex flex-col z-50
+      transition-transform duration-200 {mobileOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0">
+      <div class="px-5 py-5 border-b border-[var(--color-surface-500)]">
+        <div class="text-xl font-bold text-[var(--color-accent-light)] tracking-tight">Laubter</div>
+        <div class="text-[10px] text-[#8b949e] mt-0.5 tracking-wider uppercase">Router Management</div>
+      </div>
+
+      <div class="flex-1 py-3 flex flex-col gap-0.5 px-2 overflow-y-auto">
+        {#each nav as item}
+          {@const active = page.url.pathname === item.href || (item.href !== '/' && page.url.pathname.startsWith(item.href))}
+          <a href={item.href}
+            class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
+              {active
+                ? 'bg-[var(--color-accent)] text-white shadow-md shadow-[var(--color-accent)]/20'
+                : 'text-[#8b949e] hover:text-white hover:bg-[var(--color-surface-700)]'}">
+            <item.icon size={18} strokeWidth={1.75} />
+            {item.label}
+          </a>
+        {/each}
+      </div>
+
+      <div class="px-4 py-3 border-t border-[var(--color-surface-500)] flex items-center justify-between">
+        <div class="flex items-center gap-2 text-[11px] text-[#8b949e]">
+          <div class="w-2 h-2 rounded-full {$connected ? 'bg-[var(--color-success)] shadow-[0_0_6px_rgba(34,197,94,0.5)]' : 'bg-[var(--color-danger)]'}"></div>
+          {$connected ? 'Live' : 'Connecting...'}
+        </div>
+        <button class="p-1.5 rounded-lg text-[#8b949e] hover:text-white hover:bg-[var(--color-surface-700)] transition-colors" title="Sign out ({$username})"
+          onclick={handleLogout}>
+          <LogOut size={14} />
+        </button>
+      </div>
+    </nav>
+
+    <main class="flex-1 overflow-y-auto bg-[var(--color-surface-900)] pt-14 lg:pt-0">
+      <div class="max-w-7xl mx-auto p-4 lg:p-6">
+        {@render children()}
+      </div>
+    </main>
+  </div>
+
+  <!-- Toast notifications -->
+  {#if $toasts.length > 0}
+    <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
+      {#each $toasts as t (t.id)}
+        <div class="px-4 py-3 rounded-lg shadow-lg text-sm font-medium min-w-[200px] animate-slide-up
+          {t.type === 'success' ? 'bg-[#22c55e] text-white' : t.type === 'error' ? 'bg-[#ef4444] text-white' : 'bg-[var(--color-surface-700)] text-white border border-[var(--color-surface-500)]'}">
+          {t.message}
+        </div>
       {/each}
     </div>
-
-    <div class="px-4 py-3 border-t border-[var(--color-surface-500)] text-[11px] text-[#8b949e]">
-      <div class="flex items-center gap-2">
-        <div class="w-2 h-2 rounded-full {$connected ? 'bg-[var(--color-success)] shadow-[0_0_6px_rgba(34,197,94,0.5)]' : 'bg-[var(--color-danger)]'}"></div>
-        {$connected ? 'Live' : 'Connecting...'}
-      </div>
-    </div>
-  </nav>
-
-  <!-- Main content -->
-  <main class="flex-1 overflow-y-auto bg-[var(--color-surface-900)] pt-14 lg:pt-0">
-    <div class="max-w-7xl mx-auto p-4 lg:p-6">
-      {@render children()}
-    </div>
-  </main>
-</div>
-
-<!-- Toast notifications -->
-{#if $toasts.length > 0}
-  <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
-    {#each $toasts as t (t.id)}
-      <div class="px-4 py-3 rounded-lg shadow-lg text-sm font-medium min-w-[200px] animate-slide-up
-        {t.type === 'success' ? 'bg-[#22c55e] text-white' : t.type === 'error' ? 'bg-[#ef4444] text-white' : 'bg-[var(--color-surface-700)] text-white border border-[var(--color-surface-500)]'}">
-        {t.message}
-      </div>
-    {/each}
-  </div>
+  {/if}
 {/if}
 
 <style>

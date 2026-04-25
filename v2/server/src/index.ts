@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { UbusClient } from './core/ubus.js';
 import { UCIClient } from './core/uci.js';
 import { WebSocketHub } from './core/websocket.js';
+import { isAuthenticated, authRoutes } from './core/auth.js';
 import { HttpRouter, sendJson } from './core/router.js';
 import { PluginLoader } from './core/loader.js';
 import type { PluginContext } from './types/plugin.js';
@@ -64,6 +65,11 @@ async function main(): Promise<void> {
     ws: wsHub,
     log: (msg) => console.log(`[core] ${msg}`),
   };
+
+  // Auth routes
+  for (const route of authRoutes(ubus)) {
+    router.add(route as any);
+  }
 
   // Meta API routes
   router.add({
@@ -117,8 +123,15 @@ async function main(): Promise<void> {
     // CORS for dev
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+    // Auth check for API routes
+    if (!isAuthenticated(req)) {
+      sendJson(res, 401, { error: 'Authentication required' });
+      return;
+    }
 
     // Try API routes first
     if (await router.handle(req, res)) return;

@@ -565,6 +565,10 @@
                   {#if client.signal}
                     <span class="text-[10px] font-mono text-[#8b949e]">{client.signal} dBm</span>
                   {/if}
+                  <button class="p-1 text-[#8b949e] hover:text-[var(--color-accent-light)] transition-colors" title="Bind to {selectedNode?.alias}"
+                    onclick={() => selectedNode && bindClient(client.mac, selectedNode.mac)}>
+                    <Link size={12} />
+                  </button>
                 </div>
               </div>
             {/each}
