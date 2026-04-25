@@ -48,6 +48,13 @@
   let bindProgress = $state(0);
   let bindMessage = $state('');
 
+  // Connection settings
+  let showConfig = $state(false);
+  let configForm = $state({ host: '', port: '8443', proto: 'https', username: 'admin', password: '' });
+  let configTesting = $state(false);
+  let configTestResult = $state<{ ok: boolean; error?: string } | null>(null);
+  let configSaving = $state(false);
+
   const meshStream = subscribe<{ nodes: { get_cfg_clientlist: RawNode[] }; topology: { get_allclientlist: TopoData } }>('mesh:topology');
 
   let lastMeshTs = 0;
@@ -204,6 +211,62 @@
     return '#22c55e';
   }
 
+  // --- Config management ---
+  let configured = $state(true); // assume configured until proven otherwise
+
+  async function loadConfig() {
+    try {
+      const cfg = await api<{ host: string; inCooldown: boolean }>('/api/mesh/config');
+      if (cfg.host) {
+        // Parse URL to get parts
+        try {
+          const url = new URL(cfg.host);
+          configForm.host = url.hostname;
+          configForm.port = url.port || '8443';
+          configForm.proto = url.protocol.replace(':', '') as 'https' | 'http';
+        } catch {
+          configForm.host = cfg.host;
+        }
+        configured = true;
+      } else {
+        configured = false;
+        showConfig = true;
+      }
+    } catch {
+      configured = false;
+      showConfig = true;
+    }
+  }
+
+  async function testConfig() {
+    configTesting = true;
+    configTestResult = null;
+    try {
+      configTestResult = await api<{ ok: boolean; error?: string }>('/api/mesh/test', { method: 'POST' });
+    } catch (e) {
+      configTestResult = { ok: false, error: String(e) };
+    }
+    configTesting = false;
+  }
+
+  async function saveConfig() {
+    configSaving = true;
+    try {
+      // Save via UCI (the mesh plugin reads from laubter.mesh.*)
+      await api('/api/mesh/configure', { method: 'POST', body: JSON.stringify({
+        host: configForm.host, port: configForm.port, proto: configForm.proto,
+        username: configForm.username, password: configForm.password
+      })});
+      showConfig = false;
+      configured = true;
+      // Reload topology
+      location.reload();
+    } catch (e) {
+      alert(`Save failed: ${e}`);
+    }
+    configSaving = false;
+  }
+
   function linkLabel(n: MeshNode): string {
     if (n.backhaulType === 'wireless') {
       const parts: string[] = [];
@@ -250,6 +313,7 @@
   }
 
   onMount(async () => {
+    await loadConfig();
     const [data, leases, staticHosts] = await Promise.all([
       api<{ nodes: { get_cfg_clientlist: RawNode[] }; clients: any; topology: { get_allclientlist: TopoData }; info: Record<string, string> }>('/api/mesh/topology').catch(() => null),
       api<{ mac: string; ip: string; hostname: string }[]>('/api/dhcp/leases').catch(() => []),
@@ -298,7 +362,7 @@
         <span class="text-sm text-[#8b949e]">ASUS AiMesh</span>
       </div>
     </div>
-    <div class="flex items-center gap-8">
+    <div class="flex items-center gap-6">
       {#each [
         { v: nodes.length, l: 'Nodes' },
         { v: onlineCount, l: 'Online', accent: true },
@@ -309,14 +373,75 @@
           <div class="text-[11px] text-[#8b949e] uppercase tracking-wider">{stat.l}</div>
         </div>
       {/each}
+      <button class="p-2 rounded-lg text-[#8b949e] hover:text-white hover:bg-[var(--color-surface-700)] transition-colors" title="Connection Settings"
+        onclick={() => { showConfig = !showConfig; loadConfig(); }}>
+        <Settings size={18} />
+      </button>
     </div>
   </div>
 
+  <!-- Connection config panel -->
+  {#if showConfig}
+    <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5">
+      <h2 class="text-sm font-semibold text-white mb-4">ASUS AiMesh Connection</h2>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div>
+          <label class="block text-[12px] text-[#8b949e] mb-1.5">Host IP</label>
+          <input class="w-full px-3 py-2 bg-[var(--color-surface-700)] border border-[var(--color-surface-500)] rounded-lg text-sm text-white outline-none focus:border-[var(--color-accent)] font-mono" bind:value={configForm.host} placeholder="192.168.50.2" />
+        </div>
+        <div>
+          <label class="block text-[12px] text-[#8b949e] mb-1.5">Port</label>
+          <input class="w-full px-3 py-2 bg-[var(--color-surface-700)] border border-[var(--color-surface-500)] rounded-lg text-sm text-white outline-none focus:border-[var(--color-accent)] font-mono" bind:value={configForm.port} placeholder="8443" />
+        </div>
+        <div>
+          <label class="block text-[12px] text-[#8b949e] mb-1.5">Protocol</label>
+          <select class="w-full px-3 py-2 bg-[var(--color-surface-700)] border border-[var(--color-surface-500)] rounded-lg text-sm text-white outline-none" bind:value={configForm.proto}>
+            <option value="https">HTTPS</option>
+            <option value="http">HTTP</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[12px] text-[#8b949e] mb-1.5">Username</label>
+          <input class="w-full px-3 py-2 bg-[var(--color-surface-700)] border border-[var(--color-surface-500)] rounded-lg text-sm text-white outline-none focus:border-[var(--color-accent)]" bind:value={configForm.username} placeholder="admin" />
+        </div>
+        <div>
+          <label class="block text-[12px] text-[#8b949e] mb-1.5">Password</label>
+          <input type="password" class="w-full px-3 py-2 bg-[var(--color-surface-700)] border border-[var(--color-surface-500)] rounded-lg text-sm text-white outline-none focus:border-[var(--color-accent)]" bind:value={configForm.password} placeholder="Enter password" />
+        </div>
+      </div>
+
+      {#if configTestResult}
+        <div class="mt-3 text-xs px-3 py-2 rounded-lg {configTestResult.ok ? 'bg-[rgba(34,197,94,0.1)] text-[#22c55e]' : 'bg-[rgba(239,68,68,0.1)] text-[#ef4444]'}">
+          {configTestResult.ok ? 'Connection successful!' : `Failed: ${configTestResult.error}`}
+        </div>
+      {/if}
+
+      <div class="flex gap-2 mt-4">
+        <button class="px-3 py-1.5 rounded-lg text-sm font-medium bg-[var(--color-surface-600)] text-white hover:bg-[var(--color-surface-500)] transition-colors"
+          onclick={testConfig} disabled={configTesting}>{configTesting ? 'Testing...' : 'Test Connection'}</button>
+        <button class="px-3 py-1.5 rounded-lg text-sm font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-light)] transition-colors"
+          onclick={saveConfig} disabled={configSaving}>{configSaving ? 'Saving...' : 'Save'}</button>
+        <button class="px-3 py-1.5 rounded-lg text-sm font-medium text-[#8b949e] hover:text-white transition-colors"
+          onclick={() => showConfig = false}>Cancel</button>
+      </div>
+    </div>
+  {/if}
+
   <!-- Topology + Detail split -->
-  {#if nodes.length === 0}
+  {#if !configured && nodes.length === 0}
+    <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-8 text-center">
+      <Settings size={48} strokeWidth={1} class="mx-auto mb-4 text-[var(--color-accent)] opacity-60" />
+      <h2 class="text-lg font-semibold text-white mb-2">Configure ASUS AiMesh</h2>
+      <p class="text-sm text-[#8b949e] mb-4">Connect to your ASUS router to view mesh topology, manage clients, and bind devices.</p>
+      <button class="px-4 py-2 rounded-lg text-sm font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-light)] transition-colors"
+        onclick={() => { showConfig = true; loadConfig(); }}>
+        Set Up Connection
+      </button>
+    </div>
+  {:else if nodes.length === 0}
     <div class="text-center py-16 text-[#8b949e]">
       <Wifi size={48} strokeWidth={1} class="mx-auto mb-4 opacity-30" />
-      <p>No mesh nodes detected</p>
+      <p>No mesh nodes detected. Check connection settings.</p>
     </div>
   {:else if mainNode}
     <div class="flex flex-col lg:flex-row gap-6">

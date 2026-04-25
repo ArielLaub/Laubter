@@ -113,6 +113,29 @@ const plugin: Plugin = {
           }
         },
         {
+          method: 'POST', path: '/api/mesh/configure',
+          handler: async (req, res) => {
+            const body = await readJson<{ host: string; port: string; proto: string; username: string; password: string }>(req);
+            try {
+              // Ensure laubter.mesh section exists
+              try { await ctx.uci.get('laubter', 'mesh'); } catch { await ctx.uci.addSection('laubter', 'mesh', 'mesh'); }
+              if (body.host) await ctx.uci.set('laubter', 'mesh', 'host', body.host);
+              if (body.port) await ctx.uci.set('laubter', 'mesh', 'port', body.port);
+              if (body.proto) await ctx.uci.set('laubter', 'mesh', 'proto', body.proto);
+              if (body.username) await ctx.uci.set('laubter', 'mesh', 'username', body.username);
+              if (body.password) {
+                const { writeFile } = await import('node:fs/promises');
+                await writeFile('/etc/laubter_mesh_secret', body.password, { mode: 0o600 });
+              }
+              // Reset client to pick up new config
+              asusClient = null;
+              sendJson(res, 200, { status: 'ok' });
+            } catch (e) {
+              sendJson(res, 500, { error: String(e) });
+            }
+          }
+        },
+        {
           method: 'POST', path: '/api/mesh/test',
           handler: async (_req, res) => {
             const client = await getClient(ctx);
