@@ -4,6 +4,7 @@
   import { init, connected } from '$lib/stores/websocket';
   import { onMount } from 'svelte';
   import { LayoutDashboard, Wifi, Users, Shield, ShieldCheck, Lock, Settings, Server, Menu, X, BarChart3, ScrollText } from 'lucide-svelte';
+  import { toasts } from '$lib/stores/toast';
 
   let { children } = $props();
   let mobileOpen = $state(false);
@@ -86,3 +87,20 @@
     </div>
   </main>
 </div>
+
+<!-- Toast notifications -->
+{#if $toasts.length > 0}
+  <div class="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
+    {#each $toasts as t (t.id)}
+      <div class="px-4 py-3 rounded-lg shadow-lg text-sm font-medium min-w-[200px] animate-slide-up
+        {t.type === 'success' ? 'bg-[#22c55e] text-white' : t.type === 'error' ? 'bg-[#ef4444] text-white' : 'bg-[var(--color-surface-700)] text-white border border-[var(--color-surface-500)]'}">
+        {t.message}
+      </div>
+    {/each}
+  </div>
+{/if}
+
+<style>
+  @keyframes slide-up { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  .animate-slide-up { animation: slide-up 200ms ease-out; }
+</style>

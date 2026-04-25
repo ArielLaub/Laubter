@@ -35,8 +35,17 @@
     conns: number;
   }>('system:metrics');
 
+  // Time range
+  let timeRange = $state(600); // seconds: 600=10min, 3600=1h, 21600=6h, 86400=24h
+  const ranges = [
+    { value: 600, label: '10m' },
+    { value: 3600, label: '1H' },
+    { value: 21600, label: '6H' },
+    { value: 86400, label: '24H' },
+  ];
+
   // History buffers
-  const MAX = 300;
+  const MAX = 600;
   let cpuBuf: number[] = [];
   let memBuf: number[] = [];
   let rxBuf: number[] = [];
@@ -118,10 +127,37 @@
     };
   }
 
+  async function loadHistory() {
+    try {
+      const hist = await api<{ ts: number; cpu: number; memPercent: number; rxRate: number; txRate: number; temp: number; conns: number }[]>(`/api/system/history?range=${timeRange}&points=400`);
+      if (hist.length > 0) {
+        timeBuf = hist.map(h => h.ts);
+        cpuBuf = hist.map(h => h.cpu);
+        memBuf = hist.map(h => h.memPercent);
+        rxBuf = hist.map(h => h.rxRate ?? 0);
+        txBuf = hist.map(h => h.txRate ?? 0);
+        tempBuf = hist.map(h => h.temp ?? 0);
+        connsBuf = hist.map(h => h.conns ?? 0);
+        cpuHistory = [...cpuBuf];
+        memHistory = [...memBuf];
+        // Update existing charts
+        if (cpuChart) cpuChart.setData([new Float64Array(timeBuf), new Float64Array(cpuBuf)]);
+        if (memChart) memChart.setData([new Float64Array(timeBuf), new Float64Array(memBuf)]);
+        if (tempChart) tempChart.setData([new Float64Array(timeBuf), new Float64Array(tempBuf)]);
+        if (netChart) netChart.setData([new Float64Array(timeBuf), new Float64Array(rxBuf), new Float64Array(txBuf)]);
+      }
+    } catch {}
+  }
+
+  async function changeRange(r: number) {
+    timeRange = r;
+    await loadHistory();
+  }
+
   onMount(async () => {
     // Load history from server (pre-collected while page was closed)
     try {
-      const hist = await api<{ ts: number; cpu: number; memPercent: number; rxRate: number; txRate: number; temp: number; conns: number }[]>('/api/system/history');
+      const hist = await api<{ ts: number; cpu: number; memPercent: number; rxRate: number; txRate: number; temp: number; conns: number }[]>(`/api/system/history?range=${timeRange}&points=400`);
       if (hist.length > 0) {
         timeBuf = hist.map(h => h.ts);
         cpuBuf = hist.map(h => h.cpu);
@@ -177,9 +213,18 @@
 </svelte:head>
 
 <div class="space-y-6">
-  <div>
-    <h1 class="text-2xl font-bold text-white">Statistics</h1>
-    <p class="text-sm text-[#8b949e]">Real-time system metrics</p>
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-white">Statistics</h1>
+      <p class="text-sm text-[#8b949e]">Real-time system metrics</p>
+    </div>
+    <div class="flex gap-0 rounded-lg overflow-hidden border border-[var(--color-surface-500)]">
+      {#each ranges as r}
+        <button class="px-3 py-1.5 text-xs font-semibold transition-colors
+          {timeRange === r.value ? 'bg-[var(--color-accent-muted)] text-[var(--color-accent-light)]' : 'bg-[var(--color-surface-700)] text-[#8b949e] hover:text-white'}"
+          onclick={() => changeRange(r.value)}>{r.label}</button>
+      {/each}
+    </div>
   </div>
 
   <!-- Live values row -->

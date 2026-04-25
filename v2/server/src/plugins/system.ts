@@ -60,8 +60,8 @@ async function getNetBytes(): Promise<{ rx: number; tx: number }> {
 
 let prevCpu: CpuSample | null = null;
 
-// Ring buffer: keeps last 300 samples (10 min at 2s intervals)
-const HISTORY_MAX = 300;
+// Ring buffer: keeps last 43200 samples (24h at 2s intervals)
+const HISTORY_MAX = 43200;
 const history: MetricPoint[] = [];
 
 async function readCpuSample(): Promise<CpuSample> {
@@ -161,7 +161,22 @@ const plugin: Plugin = {
         },
         {
           method: 'GET', path: '/api/system/history',
-          handler: async (_req, res) => sendJson(res, 200, history)
+          handler: async (req, res) => {
+            const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
+            const range = parseInt(url.searchParams.get('range') ?? '600'); // seconds, default 10min
+            const maxPoints = parseInt(url.searchParams.get('points') ?? '300');
+
+            const cutoff = Date.now() / 1000 - range;
+            let data = history.filter(p => p.ts >= cutoff);
+
+            // Downsample if too many points
+            if (data.length > maxPoints) {
+              const step = Math.ceil(data.length / maxPoints);
+              data = data.filter((_, i) => i % step === 0);
+            }
+
+            sendJson(res, 200, data);
+          }
         },
         {
           method: 'GET', path: '/api/system/log',
