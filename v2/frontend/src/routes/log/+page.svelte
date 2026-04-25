@@ -81,6 +81,10 @@
         onclick={exportLog}>
         Export
       </button>
+      <button class="px-3 py-1.5 rounded-lg text-sm font-medium bg-[rgba(239,68,68,0.15)] text-[#ef4444] hover:bg-[rgba(239,68,68,0.25)] transition-colors flex items-center gap-1.5"
+        onclick={() => { lines = []; }}>
+        Clear
+      </button>
       <button class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5
         {autoScroll ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-surface-600)] text-[#8b949e]'}"
         onclick={() => { autoScroll = !autoScroll; if (autoScroll && logEl) logEl.scrollTo(0, logEl.scrollHeight); }}>

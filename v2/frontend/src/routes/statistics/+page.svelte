@@ -61,10 +61,12 @@
   let cpuChartEl = $state<HTMLDivElement | null>(null);
   let memChartEl = $state<HTMLDivElement | null>(null);
   let tempChartEl = $state<HTMLDivElement | null>(null);
+  let connsChartEl = $state<HTMLDivElement | null>(null);
   let netChartEl = $state<HTMLDivElement | null>(null);
   let cpuChart: uPlot | null = null;
   let memChart: uPlot | null = null;
   let tempChart: uPlot | null = null;
+  let connsChart: uPlot | null = null;
   let netChart: uPlot | null = null;
 
   let lastMetricTs = 0;
@@ -100,6 +102,7 @@
     if (cpuChart) cpuChart.setData([new Float64Array(timeBuf), new Float64Array(cpuBuf)]);
     if (memChart) memChart.setData([new Float64Array(timeBuf), new Float64Array(memBuf)]);
     if (tempChart) tempChart.setData([new Float64Array(timeBuf), new Float64Array(tempBuf)]);
+    if (connsChart) connsChart.setData([new Float64Array(timeBuf), new Float64Array(connsBuf)]);
     if (netChart) netChart.setData([new Float64Array(timeBuf), new Float64Array(rxBuf), new Float64Array(txBuf)]);
   });
 
@@ -144,6 +147,7 @@
         if (cpuChart) cpuChart.setData([new Float64Array(timeBuf), new Float64Array(cpuBuf)]);
         if (memChart) memChart.setData([new Float64Array(timeBuf), new Float64Array(memBuf)]);
         if (tempChart) tempChart.setData([new Float64Array(timeBuf), new Float64Array(tempBuf)]);
+        if (connsChart) connsChart.setData([new Float64Array(timeBuf), new Float64Array(connsBuf)]);
         if (netChart) netChart.setData([new Float64Array(timeBuf), new Float64Array(rxBuf), new Float64Array(txBuf)]);
       }
     } catch {}
@@ -178,6 +182,7 @@
     if (cpuChartEl) cpuChart = new uPlot(makeOpts(cpuChartEl, 'CPU', '#006fff', '%', 100), [new Float64Array(timeBuf), new Float64Array(cpuBuf)], cpuChartEl);
     if (memChartEl) memChart = new uPlot(makeOpts(memChartEl, 'Memory', '#a78bfa', '%', 100), [new Float64Array(timeBuf), new Float64Array(memBuf)], memChartEl);
     if (tempChartEl) tempChart = new uPlot(makeOpts(tempChartEl, 'Temp', '#f59e0b', '°C', undefined), [new Float64Array(timeBuf), new Float64Array(tempBuf)], tempChartEl);
+    if (connsChartEl) connsChart = new uPlot(makeOpts(connsChartEl, 'Conns', '#06b6d4', '', undefined), [new Float64Array(timeBuf), new Float64Array(connsBuf)], connsChartEl);
     if (netChartEl) {
       const netOpts: uPlot.Options = {
         width: netChartEl.clientWidth, height: 160,
@@ -270,14 +275,19 @@
     </div>
   </div>
 
-  <!-- Temperature + Network in 2-col grid -->
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+  <!-- Temperature + Connections + Network -->
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
     <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5">
       <div class="flex items-center gap-2 text-sm text-[#8b949e] mb-3">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
         Temperature
       </div>
       <div bind:this={tempChartEl}></div>
+    </div>
+
+    <div class="bg-[var(--color-surface-800)] border border-[var(--color-surface-500)] rounded-xl p-5">
+      <div class="flex items-center gap-2 text-sm text-[#8b949e] mb-3"><Activity size={15} /> Connections</div>
+      <div bind:this={connsChartEl}></div>
     </div>
 
     <!-- Network throughput chart -->
