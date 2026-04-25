@@ -210,6 +210,29 @@
       };
       netChart = new uPlot(netOpts, [new Float64Array(timeBuf), new Float64Array(rxBuf), new Float64Array(txBuf)], netChartEl);
     }
+
+    // Resize charts when container changes (responsive)
+    const ro = new ResizeObserver(() => {
+      const pairs: [HTMLDivElement | null, uPlot | null][] = [
+        [cpuChartEl, cpuChart], [memChartEl, memChart],
+        [tempChartEl, tempChart], [connsChartEl, connsChart], [netChartEl, netChart]
+      ];
+      for (const [el, chart] of pairs) {
+        if (el && chart) {
+          const w = el.clientWidth;
+          if (w > 0 && Math.abs(w - chart.width) > 10) {
+            chart.setSize({ width: w, height: 160 });
+          }
+        }
+      }
+    });
+
+    const els = [cpuChartEl, memChartEl, tempChartEl, connsChartEl, netChartEl];
+    for (const el of els) {
+      if (el?.parentElement) ro.observe(el.parentElement);
+    }
+
+    return () => ro.disconnect();
   });
 </script>
 
